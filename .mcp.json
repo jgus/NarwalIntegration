@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "homeassistant": {
+      "type": "stdio",
+      "command": "nix",
+      "args": [
+        "shell",
+        "nixpkgs#nodejs",
+        "-c",
+        "npx",
+        "-y",
+        "@jango-blockchained/homeassistant-mcp@latest"
+      ],
+      "env": {
+        "HASS_HOST": "${HASS_HOST}",
+        "HASS_TOKEN": "${HASS_TOKEN}",
+        "JWT_SECRET": "bogus-jwt-dev-secret-not-real-0123456789ab",
+        "COOKIE_SECRET": "bogus-cookie-dev-secret-not-real-0123456"
+      }
+    }
+  }
+}

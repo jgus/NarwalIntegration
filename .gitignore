@@ -54,3 +54,16 @@ robot_commands_i18n.txt
 nul
 run_analysis*.py
 prompt.md
+
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# Reverse-engineering build artifacts (recreate with: nix run .#disassemble)
+/re/build/
+*.xapk
+*.apk
+
+# keep our preserved RE scripts (upstream ignores tools/ globally)
+!/re/tools/
