@@ -33,6 +33,7 @@
         ps.pillow       # integration dep (map images)
         ps.aiohttp
         ps.pytest
+        ps.pytest-asyncio   # async test suite (asyncio_mode=auto in pyproject.toml)
         bbpb
       ]);
 
@@ -112,7 +113,12 @@
         [ -w "$TARGET" ] || { echo "!! deploy target not writable: $TARGET (fix ownership/perms)"; exit 1; }
 
         echo ">> deploying $SRC -> $TARGET"
-        rsync -a --delete --exclude='__pycache__' --exclude='*.pyc' "$SRC/" "$TARGET/"
+        # Target is group-writable but owned by another user (ha:ha), so we can write
+        # content but cannot chown/chgrp/chmod the existing dirs or set their times.
+        # Skip all that metadata; new files take the umask default (022 -> 644, which
+        # HA can read). Otherwise rsync exits non-zero and set -e skips the restart.
+        rsync -a --no-owner --no-group --no-perms --omit-dir-times --delete \
+          --exclude='__pycache__' --exclude='*.pyc' "$SRC/" "$TARGET/"
 
         if [ -n "''${HASS_HOST:-}" ] && [ -n "''${HASS_TOKEN:-}" ]; then
           echo ">> restarting HA via API"

@@ -29,8 +29,7 @@ HOST = os.environ.get("NARWAL_HOST", "narwal-test")
 DEVICE_ID = os.environ.get("NARWAL_DEVICE_ID", "7228565170b34dd6a242d983f1fc0eeb")
 PREFIX = os.environ.get("NARWAL_PREFIX", "/iSuVlI1If2")
 
-# CleanParam the app sends for a room clean (captured live, robot-accepted).
-# Field semantics are only partly known — see project_history.md TODO.
+# CleanParam (captured live, robot-accepted) = mode SWEEP_THEN_MOP(1=5), fan NORMAL(2=2), mopStrength NORMAL(3=1), water WET(4=3), 1 sweep + 2 mop passes (5=1, 6=2), overlap DENSE(8=2). Field tags/enums fully RE'd — see project_history.md.
 PARAM = {"1": 5, "2": 2, "3": 1, "4": 3, "5": 1, "6": 2, "8": 2}
 
 

@@ -31,6 +31,9 @@ Thumbs.db
 htmlcov/
 .mypy_cache/
 
+# Runtime logs
+logs/
+
 # Environment
 .env
 .env.local
