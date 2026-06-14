@@ -37,3 +37,7 @@ Our work is on **`working`**; upstream PRs are focused branches cut from `master
 - Comments: brief, one physical line per paragraph; say what a thing is, not who calls it.
 - Python: idiomatic and reviewed for Pythonic quality (the maintainer-of-record here is
   not a Python specialist).
+- Naming: match the app. Prefer the app's user-visible wording for user-facing strings
+  (entity names, option/state labels, fan_speed values); reserve its internal identifiers
+  (proto enum/field names, i18n keys) for code where there's no user-visible term. Derive
+  names from the decompiled app, not guesses.
