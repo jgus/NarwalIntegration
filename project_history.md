@@ -90,6 +90,15 @@ Wrapped wire bytes for room 2, mapId 2:
 `0a20080212180a0408011002120e080510021801200328013002400218011a002803`
 Active mapId comes from `map/get_map` field 2.1 (= 2 on this unit).
 
+### Map fetch on FW v01.08.01 (gotcha)
+`map/get_map`, `map/get_matched_map`, `map/get_editable_map` with an **empty** payload all
+return result=2 (NOT_APPLICABLE) on this firmware. The working paths:
+- `map/get_all_reduced_maps` (no args) → all maps incl. rooms, but **no raster** (thumbnails).
+- `map/get_editable_map` with `{1: mapId}` → **full map: raster + rooms + dims** (the fix).
+`client.get_map()` now: try `get_map`; if no rooms, resolve active map id (base_status f30,
+else from reduced-maps) and fetch `get_editable_map`. This surfaced after an HA restart cleared
+the in-memory map cache that had been hiding the get_map failure (the map code itself was unchanged).
+
 ### Schemas
 - `CleanTask{1:mapId, 2:items[CleanItem], 3:option TaskOption, 5:taskType, 8:excludedRoomIds}`
 - `CleanItem{1:zone ZoneOption, 2:param CleanParam, 3:order}`; `ZoneOption{1:zoneType, 2:zoneId, 8:overlapLevel}`
@@ -100,6 +109,49 @@ Active mapId comes from `map/get_map` field 2.1 (= 2 on this unit).
 - `SweepAreaOption{1:sweepFanLevel, 2:cleanCount}`; `MopAreaOption{1:mopStrengthLevel, 2:mopHumidityLevel, 3:cleanCount}`
 - enums (CleanTask.pbenum.dart): FanLevel (6 values), MopHumidity, MopStrengthLevel,
   CleanMode, OverlapLevel (3), ZoneType, TaskType — **values not yet labelled**.
+- **Reading proto field types from blutter:** the field NAME + TAG come from the `_i()`
+  BuilderInfo, but the Dart `<double>` TypeArguments does NOT distinguish float32 from
+  float64 (Dart has only `double`). The wire type is the `PbFieldType` int passed to
+  `BuilderInfo::a` (the `mov x0,#0xNNN` after the name string): 0x80=double, 0x100=float32,
+  0x200=enum, 0x800=int32, 0x1000=int64, 0x8000=uint32, 0x40=string, 0x200000=message.
+  Both `batteryPercentage` and `coveredArea` are 0x100 (float32) → decode with `_to_float32`.
+  No audited field is a true 0x80 double.
+- `WorkingStatus` (status/working_status broadcast): `{1:workingProgress f32, 2:coveredArea
+  f32 (m²), 3:timeConsuming s, 4:remainedTime s, 5:roomCleanedTimes[], 6:cleaningZoneId,
+  7:taskExtra str, 8:dryingTime, 9:totalDryingTime, 10:dryingBagTime, 11:totalDryingBagTime,
+  12:dryStationBagTime, 13:totalDryStationBagTime (18000=5h — the old "1.8 m²" bug),
+  14:stationBagSterilizationTime, 15:total…, 16:dustBagDetectTime, 17:total…,
+  18:dryMopWorkingStatus, 19:dryDustBagWorkingStatus, 20:videoCruise, 21:searchPet,
+  22:waitUser, 23:cleanTaskRoomParamChangeTimestamp i64}`. Area sensor reads field 2.
+- `RobotBaseStatus` (status/robot_base_status broadcast) — key fields, several live-validated
+  on dock: `1:errorCode[] (empty=ok), 2:batteryPercentage f32, 3:robotTaskStatus{1:task,
+  2:pauseStatus,7:returning,10:recall,11:charging,12:washAndDry}, 5:supplyDrainModule,
+  11:stationContactType, 12:detergentState, 13:bindedUuid str, 15:terminateReason,
+  20:dustBoxState, 21:dustBagState, 23:cleanWaterTankState, 24:sewageTankState, 25:statusCodes,
+  26:fanLevel(active), 29:mopHumidity(active), 30:mapId, 35:stationBagHealthScore f32 %,
+  36:stationBagHealthResetTime epoch, 38:curingAgentConsumptionPercent, 39:stationBagStatus,
+  40:heavyDetergentStatus, 41:heavyDetergentRemainPercent, 44:hasStation, 45:isRobotAtOrigin,
+  47:chargingStatus, 49:batteryCooling, 50:ambientLightStatus}`. Most state fields are enums
+  whose value→label tables are not yet decoded. Capture: `re/tools/base_status_probe.py`.
+  Audit fixed mislabels: field 13 was `session_id` (it's bindedUuid), 36 was `timestamp`
+  (stationBagHealthResetTime), 38 was `battery_health "always 100"` (curingAgentConsumptionPercent).
+  Added sensors: dust bag health (f35), detergent remaining (f41), error/problem (f1).
+- **Error detail**: base_status f1 `ErrorCode` = `{1:identityCode, 2:level(uint32), 3:debugDetail str}`,
+  repeated; empty `{}` = no fault. There is NO local code→text table — the app opens a web help
+  page (`goHelpCenterByCode` → `help.narwal.com/...?code=<n>&lang=`; base is a runtime i18n value).
+  The error sensor exposes `codes`/`level`/`detail` + a best-effort `help_url` (template inferred,
+  in const `ERROR_HELP_URL_TEMPLATE` — correct if a real fault opens a different path).
+- **Last clean result**: base_status f15 `terminateReason` = `TaskResult` enum (live 1=NORMAL_END).
+  Result codes appear stable across FW (unlike f3.1/f47). Sensor `last_clean_result`.
+- **Consumables**: per-part life % is CLOUD-only (`supportConsumablesOnCloud`). LAN
+  `consumable/get_consumable_info` → `{1:ConsumableInfoPayload{1:maintainItems[], 2:replaceItems[]}}`
+  = alert lists only (enums in re/ENUMS.md). Queried (not broadcast); coordinator polls every ~30 min.
+  Sensors `maintenance_required` / `replacement_required` (item names in attributes).
+- `OTAUpgradeStatus` (upgrade/upgrade_status): `1:type, 2:status, 3:progress, 4:stage,
+  5:errorCode, 6:detailErrorCode, 7:currentVersion str, 8:targetVersion str`. Was reading
+  f4 (stage) as status; corrected to f2 status + f4 stage.
+- `DownloadStatus` (status/download_status, voice/timbre pack): `1:type, 2:progress, 3:state,
+  4:errorCode, 5:language, 6:timbreId`. Was reading f1 (type) as status; corrected to f3 state.
 
 ### Live room table (active map id = 2)
 Named (field 3): 1 Laundry · 2 Office · 3 Main Bath · 4 Hallway · 5 Mudroom ·
@@ -170,8 +222,23 @@ Both changes are on `working` here and currently deployed to the live instance.
 - [ ] **CleanParam field decode** — map tags 1–8 to fanLevel/mode/mopHumidity/mopStrengthLevel/
       mopTime/sweepTime/cleanCount/etc. via the convert util; replace the opaque
       `_ROOM_CLEAN_PARAM` blob with named, documented values. (PR blocker for #25/#37.)
-- [ ] **Enum labels** — FanLevel(6), MopHumidity, MopStrengthLevel, CleanMode, OverlapLevel(3),
-      ZoneType, TaskType.
+- [x] **Enum labels** — DONE. Decoded all 225 enums (names survive in pp.txt's constant pool
+      even though `_omitEnumNames` stripped them from the pbenum). Tables in [ENUMS.md](re/ENUMS.md),
+      regen with `re/tools/dump_enums.py`. Caveat: value 1 (healthy state) is omitted for some
+      tank/bag enums; f47 chargingStatus decodes to {0,5} but live=3 (app/FW mismatch).
+- [x] **Station problem sensors** — DONE. clean-water/sewage tank, dust box/bag, station bag
+      (f23/24/20/21/39) as `problem` binary_sensors, gated on field presence; error (f1). Plus
+      dust-bag health (f35) and detergent (f41) % sensors.
+- [ ] **Remaining base_status sensors** — charging status (f47, blocked on the FW mismatch
+      above — validate live across charge cycles before trusting), active fan/water (f26/29 →
+      let vacuum fan_speed / water select reflect live state, not just pending).
+- [ ] **Cleaning-session sensors** — progress % (working_status f1, validate 0..1 vs 0..100),
+      time remaining (f4) — only populated during a clean; capture with `re/tools/area_probe.py`.
+      Also confirm coveredArea (f2) units against a known-area clean.
+- [ ] **True battery health** — `info/get_battery_info` (f8 healthState, f2 chargeCycleCount,
+      f5/6/7 temp/voltage/current). Needs a new periodic coordinator query; units unvalidated.
+- [ ] **Per-clean history** — `report/clean_report` (area/duration/result/error, persists after
+      a clean ends); confirm push-vs-query delivery via a live capture on s2.
 - [ ] **New settings** — expose mop water level, coverage/passes, and clean mode
       (vacuum/mop/both) in the integration; wire each to the right CleanParam field.
 - [ ] **Open PRs upstream** — #22 (room labels) and #25/#37 (room clean), as separate
