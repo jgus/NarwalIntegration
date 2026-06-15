@@ -519,6 +519,7 @@ class NarwalState:
     error_codes: list[int] = field(default_factory=list)  # field 1 ErrorCode.identityCode(s)
     error_level: int = 0  # ErrorCode.level (field 1 sub-2)
     error_detail: str = ""  # ErrorCode.debugDetail (field 1 sub-3)
+    terminate_reason: int = 0  # field 15 — TaskResult of the last task (why it ended)
 
     # Station tank/bag enum states (base_status; None = not reported by this model).
     # 0=unspecified, 1=ok/installed, ≥2=attention (empty/abnormal/replace) — see BaseStatusField.
@@ -765,6 +766,11 @@ class NarwalState:
                 self.binded_uuid = str(raw)
                 if self.binded_uuid.startswith("b'"):
                     self.binded_uuid = self.binded_uuid[2:-1]
+        if "15" in decoded:
+            try:
+                self.terminate_reason = int(decoded["15"])
+            except (ValueError, TypeError):
+                pass
 
     def _update_consumables(self, decoded: dict[str, Any]) -> None:
         """Parse base_status consumable/station/fault fields — hardware-sampled, so trustworthy even in deep-sleep battery-only updates."""

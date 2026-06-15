@@ -250,6 +250,12 @@ class TestNarwalState:
         assert state.clean_water_tank_state == 2  # EMPTY
         assert state.station_bag_state == 3  # SUGGEST_REPLACE
 
+    def test_terminate_reason(self) -> None:
+        """Field 15 = terminateReason (TaskResult)."""
+        state = NarwalState()
+        state.update_from_base_status({"15": 4})
+        assert state.terminate_reason == 4  # LOW_BATTERY_FORCE_END
+
     def test_update_from_upgrade_status(self) -> None:
         state = NarwalState()
         state.update_from_upgrade_status({

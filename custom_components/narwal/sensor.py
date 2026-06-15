@@ -18,6 +18,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .narwal_client import NarwalState
 
 from . import NarwalConfigEntry
+from .const import TASK_RESULT_OPTIONS
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 
@@ -88,6 +89,15 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         translation_key="firmware_version",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda state: state.firmware_version or None,
+    ),
+    NarwalSensorEntityDescription(
+        key="last_clean_result",
+        translation_key="last_clean_result",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=list(TASK_RESULT_OPTIONS.values()),
+        # base_status field 15 terminateReason (TaskResult) — why the last task ended.
+        value_fn=lambda state: TASK_RESULT_OPTIONS.get(state.terminate_reason),
     ),
 )
 

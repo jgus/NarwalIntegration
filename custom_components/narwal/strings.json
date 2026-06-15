@@ -41,6 +41,29 @@
       "detergent_remaining": {
         "name": "Detergent remaining"
       },
+      "last_clean_result": {
+        "name": "Last clean result",
+        "state": {
+          "normal_end": "Completed",
+          "user_force_end": "Stopped by user",
+          "shutdown_force_end": "Ended (shutdown)",
+          "low_battery_force_end": "Ended (low battery)",
+          "overflow_force_end": "Ended (tank overflow)",
+          "pause_too_long_force_end": "Ended (paused too long)",
+          "system_error_force_end": "Ended (system error)",
+          "user_force_end_on_station": "Stopped at station",
+          "user_force_end_on_app": "Stopped from app",
+          "recall_end": "Recalled to dock",
+          "normal_end_replenish_map_fail": "Completed (map update failed)",
+          "map_unmatched_force_end": "Ended (map mismatch)",
+          "relocation_fail_with_station_force_end": "Ended (relocation failed)",
+          "relocation_fail_without_station_force_end": "Ended (relocation failed, no station)",
+          "pretask_error_force_end": "Ended (pre-task error)",
+          "schedule_task_force_end": "Ended (schedule)",
+          "unexecuted": "Not run",
+          "not_find_pet": "Pet not found"
+        }
+      },
       "charging_state": {
         "name": "Charging",
         "state": {
