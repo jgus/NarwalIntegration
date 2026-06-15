@@ -80,6 +80,12 @@
       "station_bag": {
         "name": "Station dust bag"
       },
+      "maintenance_required": {
+        "name": "Maintenance required"
+      },
+      "replacement_required": {
+        "name": "Replacement required"
+      },
       "charging": {
         "name": "Charging"
       }

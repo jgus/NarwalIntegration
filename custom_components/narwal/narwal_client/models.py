@@ -196,6 +196,20 @@ def _to_float32(val: Any) -> float | None:
     return None
 
 
+def _enum_int_list(val: Any) -> list[int]:
+    """Coerce a bbp repeated field (int, list, or absent) to a list of non-zero ints."""
+    items = val if isinstance(val, list) else [val] if val is not None else []
+    out: list[int] = []
+    for item in items:
+        try:
+            n = int(item)
+        except (ValueError, TypeError):
+            continue
+        if n:
+            out.append(n)
+    return out
+
+
 def _parse_obstacles(field32: dict) -> list[ObstacleInfo]:
     """Parse obstacle/furniture annotations from bbp-decoded field 2.32.
 
@@ -527,6 +541,10 @@ class NarwalState:
     dust_box_state: int | None = None  # field 20 (DustBoxState)
     dust_bag_state: int | None = None  # field 21 (DustBagState)
     station_bag_state: int | None = None  # field 39 (StationBagStatus)
+
+    # Consumable alerts from consumable/get_consumable_info (queried, not broadcast)
+    maintain_items: list[int] = field(default_factory=list)  # ConsumableMaintainItem values
+    replace_items: list[int] = field(default_factory=list)  # ConsumableReplaceItem values
 
     # Map
     map_data: MapData | None = None
@@ -869,3 +887,15 @@ class NarwalState:
         """
         if "3" in decoded:
             self.download_status = int(decoded["3"])
+
+    def update_from_consumable_info(self, decoded: dict[str, Any]) -> None:
+        """Parse a consumable/get_consumable_info response into maintain/replace alert lists.
+
+        {1: ConsumableInfoPayload{1: maintainItems[], 2: replaceItems[]}}; an empty
+        payload means nothing needs attention. Per-consumable life % is cloud-only.
+        """
+        payload = decoded.get("1")
+        if not isinstance(payload, dict):
+            payload = {}
+        self.maintain_items = _enum_int_list(payload.get("1"))
+        self.replace_items = _enum_int_list(payload.get("2"))

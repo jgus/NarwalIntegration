@@ -24,6 +24,9 @@ POLL_INTERVAL = timedelta(seconds=60)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
 
+# Consumable alerts change over weeks — poll every ~30 min (30 * POLL_INTERVAL).
+CONSUMABLE_POLL_EVERY = 30
+
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
     """Push-mode coordinator for Narwal vacuum.
@@ -61,6 +64,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
         self._last_display_map_resub: float = 0.0
         self._consecutive_failures = 0
         self._max_failures = 5  # 5 * 60s = 5 minutes before entities go unavailable
+        self._consumable_poll_countdown = 0  # 0 = fetch on next poll, then every CONSUMABLE_POLL_EVERY
 
     async def async_setup(self) -> None:
         """Connect to the vacuum and start the WebSocket listener.
@@ -87,6 +91,11 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             await self.client.get_map()
         except Exception:
             _LOGGER.debug("Could not fetch initial map")
+
+        try:
+            await self.client.get_consumable_info()
+        except Exception:
+            _LOGGER.debug("Could not fetch initial consumable info")
 
         # Subscribe to broadcast topics (display_map, working_status, etc.)
         # Must be sent before listener starts so display_map flows during cleaning.
@@ -250,6 +259,16 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
                 await self.client.get_map()
             except Exception:
                 pass
+
+        # Refresh consumable alerts periodically (slow-changing; not broadcast)
+        if self._consumable_poll_countdown <= 0:
+            self._consumable_poll_countdown = CONSUMABLE_POLL_EVERY
+            try:
+                await self.client.get_consumable_info()
+            except Exception:
+                _LOGGER.debug("Consumable info poll failed")
+        else:
+            self._consumable_poll_countdown -= 1
 
         # Manage fast poll countdown
         if self._fast_poll_remaining > 0:
