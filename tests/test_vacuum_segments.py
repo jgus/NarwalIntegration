@@ -17,6 +17,7 @@ import tests.ha_stubs  # noqa: E402
 tests.ha_stubs.install()
 
 from narwal_client.models import MapData, NarwalState, RoomInfo  # noqa: E402
+from custom_components.narwal.coordinator import CleanSettings  # noqa: E402
 from custom_components.narwal.vacuum import NarwalVacuum  # noqa: E402
 
 # Grab Segment class from stubs for assertions
@@ -36,12 +37,12 @@ def _make_vacuum(state: NarwalState | None = None) -> NarwalVacuum:
     coordinator.client.state = MagicMock()
     coordinator.client.state.firmware_version = "1.0.0"
     coordinator.last_update_success = True
+    coordinator.clean_settings = CleanSettings()
 
     vac = NarwalVacuum.__new__(NarwalVacuum)
     vac.coordinator = coordinator
     vac._attr_unique_id = "test_dev_001"
     vac._attr_device_info = {}
-    vac._last_fan_speed = None
 
     # Stub StateVacuumEntity attributes
     vac.last_seen_segments = None
@@ -166,9 +167,10 @@ class TestAsyncCleanSegments:
     """Tests for async_clean_segments."""
 
     async def test_converts_string_ids_and_calls_start_rooms(self) -> None:
-        """Converts string segment IDs to int and calls client.start_rooms."""
+        """Converts string segment IDs to int and calls start_rooms with the settings."""
         state = NarwalState()
         vac = _make_vacuum(state=state)
+        settings = vac.coordinator.clean_settings
         vac.coordinator.client.start_rooms = AsyncMock(
             return_value=MagicMock(result_code=0, success=True)
         )
@@ -178,7 +180,14 @@ class TestAsyncCleanSegments:
 
         await vac.async_clean_segments(["11", "9"])
 
-        vac.coordinator.client.start_rooms.assert_awaited_once_with([11, 9])
+        vac.coordinator.client.start_rooms.assert_awaited_once_with(
+            [11, 9],
+            work_mode=settings.work_mode,
+            fan=settings.fan,
+            water=settings.water,
+            mop_strength=settings.mop_strength,
+            passes=settings.passes,
+        )
 
 
 class TestCheckSegmentChanges:

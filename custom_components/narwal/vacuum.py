@@ -18,8 +18,9 @@ except ImportError:
     Segment = None  # HA < 2026.3 — room cleaning unavailable
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
-from .narwal_client import CommandResult, FanLevel, NarwalCommandError, WorkingStatus
+from .narwal_client import CommandResult, WorkingStatus
 
 from . import NarwalConfigEntry
 from .const import FAN_SPEED_LIST, FAN_SPEED_MAP
@@ -39,6 +40,9 @@ WORKING_STATUS_TO_ACTIVITY: dict[WorkingStatus, VacuumActivity] = {
     WorkingStatus.ERROR: VacuumActivity.ERROR,
 }
 
+# FanLevel value -> fan_speed label (canonical labels only; FAN_SPEED_MAP also holds back-compat aliases).
+_FAN_LABELS: dict[int, str] = {int(FAN_SPEED_MAP[label]): label for label in FAN_SPEED_LIST}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -50,7 +54,7 @@ async def async_setup_entry(
     async_add_entities([NarwalVacuum(coordinator)])
 
 
-class NarwalVacuum(NarwalEntity, StateVacuumEntity):
+class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
     """Representation of a Narwal robot vacuum."""
 
     _attr_translation_key = "vacuum"
@@ -69,7 +73,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """Initialize the vacuum entity."""
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.config_entry.data["device_id"]
-        self._last_fan_speed: str | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the pending fan speed into clean_settings (persists across restarts)."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and (fan := last.attributes.get("fan_speed")) in FAN_SPEED_MAP:
+            self.coordinator.clean_settings.fan = FAN_SPEED_MAP[fan]
 
     @property
     def activity(self) -> VacuumActivity:
@@ -109,13 +119,13 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
 
     @property
     def fan_speed(self) -> str | None:
-        """Return the current fan speed.
+        """Return the selected fan speed.
 
-        The robot protocol does not broadcast the active fan speed setting,
-        so we track the last value set via the integration. Returns None
-        until the user sets a fan speed for the first time.
+        The robot does not broadcast the active fan level, so this reflects the
+        pending value held in coordinator.clean_settings (applied at the next clean
+        and, while cleaning, written live via set_fan_speed).
         """
-        return self._last_fan_speed
+        return _FAN_LABELS.get(int(self.coordinator.clean_settings.fan))
 
     # Timeout for action commands (start/stop/return) — robot may need
     # time to load map, plan route, etc., especially after waking.
@@ -185,12 +195,19 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         await self.coordinator.client.locate()
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs) -> None:
-        """Set the fan speed."""
+        """Set the fan speed.
+
+        Stores it as the pending suction for the next clean; if the robot is
+        currently cleaning, also writes it live via set_fan_speed.
+        """
         level = FAN_SPEED_MAP.get(fan_speed)
-        if level is not None:
+        if level is None:
+            return
+        self.coordinator.clean_settings.fan = level
+        self.async_write_ha_state()
+        state = self.coordinator.data
+        if state is not None and state.is_cleaning:
             await self.coordinator.client.set_fan_speed(level)
-            self._last_fan_speed = fan_speed
-            self.async_write_ha_state()
 
     # --- Segment API (HA 2026.3 room-specific cleaning) ---
 
@@ -231,8 +248,21 @@ class NarwalVacuum(NarwalEntity, StateVacuumEntity):
         """
         await self._ensure_awake()
         room_ids = [int(sid) for sid in segment_ids]
-        _LOGGER.info("Starting room-specific clean: rooms=%s", room_ids)
-        resp = await self.coordinator.client.start_rooms(room_ids)
+        settings = self.coordinator.clean_settings
+        _LOGGER.info(
+            "Starting room-specific clean: rooms=%s mode=%s fan=%s water=%s "
+            "mop_strength=%s passes=%s",
+            room_ids, settings.work_mode.name, settings.fan.name,
+            settings.water.name, settings.mop_strength.name, settings.passes,
+        )
+        resp = await self.coordinator.client.start_rooms(
+            room_ids,
+            work_mode=settings.work_mode,
+            fan=settings.fan,
+            water=settings.water,
+            mop_strength=settings.mop_strength,
+            passes=settings.passes,
+        )
         try:
             result_name = CommandResult(resp.result_code).name
         except ValueError:

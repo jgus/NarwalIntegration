@@ -52,6 +52,37 @@
           "off": "Non stationné"
         }
       }
+    },
+    "select": {
+      "work_mode": {
+        "name": "Mode de nettoyage",
+        "state": {
+          "vacuum": "Aspiration",
+          "mop": "Serpillière",
+          "vacuum_then_mop": "Aspiration puis serpillière",
+          "vacuum_and_mop": "Aspiration et serpillière"
+        }
+      },
+      "water": {
+        "name": "Humidité de la serpillière",
+        "state": {
+          "dry": "Légèrement sec",
+          "normal": "Normal",
+          "wet": "Légèrement humide"
+        }
+      },
+      "mop_strength": {
+        "name": "Intensité de la serpillière",
+        "state": {
+          "normal": "Normale",
+          "high": "Élevée"
+        }
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "Passages de nettoyage"
+      }
     }
   }
 }

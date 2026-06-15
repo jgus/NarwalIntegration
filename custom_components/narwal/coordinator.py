@@ -5,13 +5,22 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .narwal_client import NarwalClient, NarwalConnectionError, NarwalState
+from .narwal_client import (
+    WorkMode,
+    FanLevel,
+    MopHumidity,
+    MopStrengthLevel,
+    NarwalClient,
+    NarwalConnectionError,
+    NarwalState,
+)
 from .narwal_client.const import WorkingStatus
 
 from .const import DOMAIN
@@ -23,6 +32,20 @@ POLL_INTERVAL = timedelta(seconds=60)
 # Fast re-poll when state is incomplete (robot asleep at startup)
 FAST_POLL_INTERVAL = timedelta(seconds=10)
 FAST_POLL_MAX = 6  # up to 60s of fast polling before falling back to normal
+
+
+@dataclass
+class CleanSettings:
+    """User-selected clean parameters, applied at the next room clean start.
+
+    Single source of truth the select/number entities mutate and the clean-start path reads; each entity persists its value via RestoreEntity, so they survive restarts. Only fan and water also have live setters — work_mode/mop_strength/passes take effect at the next start.
+    """
+
+    work_mode: WorkMode = WorkMode.VACUUM_AND_MOP
+    fan: FanLevel = FanLevel.NORMAL
+    water: MopHumidity = MopHumidity.NORMAL
+    mop_strength: MopStrengthLevel = MopStrengthLevel.NORMAL
+    passes: int = 1
 
 
 class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
@@ -54,6 +77,7 @@ class NarwalCoordinator(DataUpdateCoordinator[NarwalState]):
             device_id=entry.data.get("device_id", ""),
             topic_prefix=topic_prefix,
         )
+        self.clean_settings = CleanSettings()
         self._listen_task: asyncio.Task[None] | None = None
         self._fast_poll_remaining = 0
         self._prev_working_status = WorkingStatus.UNKNOWN

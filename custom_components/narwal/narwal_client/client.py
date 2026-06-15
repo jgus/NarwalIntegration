@@ -42,7 +42,8 @@ from .const import (
     TOPIC_CMD_RESUME,
     TOPIC_CMD_SET_FAN_LEVEL,
     TOPIC_CMD_SET_MOP_HUMIDITY,
-    TOPIC_CMD_START_CLEAN,
+    TOPIC_CMD_PLAN_START,
+    TOPIC_CMD_CLEAN_TASK,
     TOPIC_CMD_TAKE_PICTURE,
     TOPIC_CMD_SET_LED,
     TOPIC_CMD_WASH_MOP,
@@ -52,6 +53,9 @@ from .const import (
     CommandResult,
     FanLevel,
     MopHumidity,
+    MopStrengthLevel,
+    WorkMode,
+    WorkingStatus,
 )
 from .models import CommandResponse, DeviceInfo, MapData, MapDisplayData, NarwalState
 from .protocol import (
@@ -915,7 +919,7 @@ class NarwalClient:
         so we know which rooms to include.
         """
         resp = await self.send_command(
-            TOPIC_CMD_START_CLEAN,
+            TOPIC_CMD_PLAN_START,
             payload=self._DEFAULT_CLEAN_PAYLOAD,
             timeout=10.0,
         )
@@ -944,7 +948,7 @@ class NarwalClient:
         )
         payload = self._build_clean_payload_v2(room_ids)
         return await self.send_command(
-            TOPIC_CMD_START_CLEAN, payload=payload, timeout=10.0,
+            TOPIC_CMD_PLAN_START, payload=payload, timeout=10.0,
         )
 
     def _build_clean_payload_v2(
@@ -958,9 +962,7 @@ class NarwalClient:
         """Build clean task payload using the v2 schema (firmware v01.07.22+).
 
         Observed in issue #36 from a Flow on firmware v01.07.22.00.
-        Each room entry uses a nested room_id (different from the flat
-        schema in _build_room_clean_payload used for room-targeted cleans
-        on older firmware):
+        Each room entry uses a nested room_id:
 
             {
               1: {1: 1, 2: <room_id>},                # nested room ref
@@ -1046,126 +1048,152 @@ class NarwalClient:
         }
         return blackboxprotobuf.encode_message(msg, typedef)
 
-    def _build_room_clean_payload(self, room_ids: list[int]) -> bytes:
-        """Build CleanTask protobuf with per-room clean params in field 1.2.
+    # WorkMode -> (CleanParam.mode tag 1, pass-count tags to set from `passes`). The robot's
+    # execution mode is CleanTask.taskType (= the WorkMode value); CleanParam.mode and the
+    # pass tag are derived here so the two can't drift. Live-validated on a Flow 2; see
+    # project_history.md "CleanParam — fully decoded".
+    _WORK_MODE_PARAM: dict[WorkMode, tuple[int, tuple[str, ...]]] = {
+        WorkMode.VACUUM: (2, ("5",)),               # sweepTime
+        WorkMode.MOP: (3, ("6",)),                 # mopTime
+        WorkMode.VACUUM_THEN_MOP: (5, ("5", "6")),  # sweep + mop pass counts
+        WorkMode.VACUUM_AND_MOP: (4, ("7",)),      # sweepMopSyncTime
+    }
 
-        Each room entry in field 1.2 requires full MapCleanParamInfo fields
-        (from APK proto analysis):
-          field 1: roomId (uint32)
-          field 2: cleanMode (int32) — 0=sweep, 1=mop, 2=sweep+mop
-          field 3: cleanTimes (int32) — number of passes
-          field 6: sweepMode (int32) — suction level (3=max)
-          field 7: mopMode (int32) — mop humidity (2=wet)
+    def _build_start_clean_payload(
+        self,
+        room_ids: list[int],
+        map_id: int,
+        *,
+        work_mode: WorkMode = WorkMode.VACUUM_AND_MOP,
+        fan: FanLevel = FanLevel.NORMAL,
+        water: MopHumidity = MopHumidity.NORMAL,
+        mop_strength: MopStrengthLevel = MopStrengthLevel.NORMAL,
+        passes: int = 1,
+    ) -> bytes:
+        """Build a clean/start_clean request for the given rooms.
 
-        A bare roomId without clean params is silently ignored by the robot.
+        StartClean_Request{1: CleanTask{1: map_id, 2: [CleanItem...], 3: {} (TaskOption),
+        5: taskType}}; CleanItem{1: ZoneOption{1: 1 (room zone), 2: room_id}, 2: CleanParam,
+        3: order}. taskType (the execution-mode carrier) and CleanParam.mode/pass-tag are
+        derived from work_mode. overlapLevel is omitted — live-validated as ignored here.
 
         Args:
-            room_ids: List of room IDs from RoomInfo.room_id.
-
-        Returns:
-            Encoded protobuf bytes for clean/plan/start.
+            room_ids: Robot room IDs (RoomInfo.room_id).
+            map_id: Active map id (MapData.map_id, get_map field 2.1).
+            work_mode: Vacuum / mop / vacuum-then-mop / vacuum-and-mop.
+            fan: Suction level (CleanParam tag 2).
+            water: Mop water volume (tag 4).
+            mop_strength: Mop scrub intensity (tag 3).
+            passes: Clean count, routed to the pass tag(s) for the mode.
         """
-        if not room_ids:
-            return self._DEFAULT_CLEAN_PAYLOAD
-
         import blackboxprotobuf
 
-        # Build per-room entries with default clean settings
-        room_entries = []
-        for rid in room_ids:
-            room_entries.append({
-                "1": rid,       # roomId
-                "2": 2,         # cleanMode = sweep+mop
-                "3": 1,         # cleanTimes = 1 pass
-                "6": 3,         # sweepMode = max suction
-                "7": 2,         # mopMode = wet
-            })
+        param_mode, pass_tags = self._WORK_MODE_PARAM[work_mode]
+        param: dict[str, int] = {
+            "1": int(param_mode),
+            "2": int(fan),
+            "3": int(mop_strength),
+            "4": int(water),
+        }
+        for tag in pass_tags:
+            param[tag] = int(passes)
 
-        room_typedef = {
+        items = [
+            {"1": {"1": 1, "2": rid}, "2": dict(param), "3": idx + 1}
+            for idx, rid in enumerate(room_ids)
+        ]
+        task = {
+            "1": map_id,
+            "2": items if len(items) > 1 else items[0],
+            "3": {},
+            "5": int(work_mode),  # CleanTask.taskType
+        }
+        item_typedef = {
             "type": "message",
             "seen_repeated": True,
             "message_typedef": {
-                "1": {"type": "uint"},
-                "2": {"type": "int"},
+                "1": {"type": "message", "message_typedef": {
+                    "1": {"type": "int"}, "2": {"type": "int"},
+                }},
+                # Derive the CleanParam typedef from the emitted dict — bbpb silently
+                # drops any tag absent from the typedef.
+                "2": {"type": "message", "message_typedef": {
+                    k: {"type": "int"} for k in param
+                }},
                 "3": {"type": "int"},
-                "6": {"type": "int"},
-                "7": {"type": "int"},
-            }
+            },
         }
-
-        # Single room: field 1.2 is a message; multiple: repeated message
-        field_2_value = room_entries[0] if len(room_entries) == 1 else room_entries
-
-        msg = {
-            "1": {
-                "2": field_2_value,
-                "5": {
-                    "1": {"1": 3, "2": 2, "3": 1},
-                    "5": {}
-                }
-            }
-        }
-        typedef = {
-            "1": {
-                "type": "message",
-                "message_typedef": {
-                    "2": room_typedef,
-                    "5": {
-                        "type": "message",
-                        "message_typedef": {
-                            "1": {
-                                "type": "message",
-                                "message_typedef": {
-                                    "1": {"type": "int"},
-                                    "2": {"type": "int"},
-                                    "3": {"type": "int"}
-                                }
-                            },
-                            "5": {"type": "message", "message_typedef": {}}
-                        }
-                    }
-                }
-            }
-        }
-        return blackboxprotobuf.encode_message(msg, typedef)
+        typedef = {"1": {"type": "message", "message_typedef": {
+            "1": {"type": "int"},
+            "2": item_typedef,
+            "3": {"type": "message", "message_typedef": {}},
+            "5": {"type": "int"},
+        }}}
+        return blackboxprotobuf.encode_message({"1": task}, typedef)
 
     async def start_rooms(
-        self, room_ids: list[int],
+        self,
+        room_ids: list[int],
+        *,
+        work_mode: WorkMode = WorkMode.VACUUM_AND_MOP,
+        fan: FanLevel = FanLevel.NORMAL,
+        water: MopHumidity = MopHumidity.NORMAL,
+        mop_strength: MopStrengthLevel = MopStrengthLevel.NORMAL,
+        passes: int = 1,
     ) -> CommandResponse:
-        """Start room-specific cleaning.
+        """Start cleaning the given rooms via clean/start_clean.
 
-        Sends clean/plan/start with the user-selected rooms. Tries the v2
-        nested-room schema first (required by firmware v01.07.22+, and fixes
-        the ack-but-ignore behavior in #37 where legacy schema returns
-        SUCCESS but the robot runs the app shortcut instead of HA-selected
-        rooms). Falls back to legacy flat-room schema on NOT_APPLICABLE
-        for older firmware.
+        Room cleaning must use clean/start_clean (StartClean → CleanTask), not
+        clean/plan/start: on Flow firmware the latter is StartWithPlan{planId,
+        mapId} and ignores any room payload — the root cause of #25/#37, where
+        the robot undocks and wanders instead of cleaning the selected rooms.
+        The CleanTask carries the active map id (get_map field 2.1).
+
+        clean/start_clean only works while docked; from STANDBY the robot
+        returns NOT_READY (4). Callers should start from the dock; this retries
+        briefly to cover the dock settling transition.
 
         Args:
-            room_ids: List of room IDs from RoomInfo.room_id.
-
-        Returns:
-            CommandResponse with result code from whichever schema landed.
+            room_ids: Robot room IDs (RoomInfo.room_id), mapped from HA areas.
+            work_mode, fan, water, mop_strength, passes: CleanParam settings —
+                see _build_start_clean_payload.
         """
         if not room_ids:
             return await self.start()
 
-        payload_v2 = self._build_clean_payload_v2(room_ids)
-        resp = await self.send_command(
-            TOPIC_CMD_START_CLEAN, payload=payload_v2, timeout=10.0,
-        )
-        if resp.result_code != CommandResult.NOT_APPLICABLE:
-            return resp
+        map_data = self.state.map_data
+        if not map_data or not map_data.map_id:
+            map_data = await self.get_map()
+        map_id = map_data.map_id if map_data else 0
+        if not map_id:
+            _LOGGER.warning(
+                "start_rooms: no active map id available; cannot start room clean"
+            )
+            return CommandResponse(result_code=CommandResult.NOT_APPLICABLE)
 
-        # v2 rejected — try legacy flat-room schema (older firmware)
-        _LOGGER.info(
-            "start_rooms(): v2 payload rejected, retrying with legacy schema (%d rooms)",
-            len(room_ids),
+        payload = self._build_start_clean_payload(
+            room_ids, map_id, work_mode=work_mode, fan=fan, water=water,
+            mop_strength=mop_strength, passes=passes,
         )
-        payload_legacy = self._build_room_clean_payload(room_ids)
-        return await self.send_command(
-            TOPIC_CMD_START_CLEAN, payload=payload_legacy, timeout=10.0,
+        resp = await self.send_command(
+            TOPIC_CMD_CLEAN_TASK, payload=payload, timeout=10.0,
         )
+        for _ in range(3):
+            if resp.result_code != CommandResult.NOT_READY:
+                break
+            if not self.state.is_docked:
+                _LOGGER.warning(
+                    "start_rooms: robot not docked (status=%s); clean/start_clean "
+                    "requires the robot on the dock",
+                    self.state.working_status.name,
+                )
+                break
+            _LOGGER.info("start_rooms: robot docking/settling, retrying clean/start_clean")
+            await asyncio.sleep(3.0)
+            resp = await self.send_command(
+                TOPIC_CMD_CLEAN_TASK, payload=payload, timeout=10.0,
+            )
+        return resp
 
     async def start_easy_clean(self) -> CommandResponse:
         """Start quick/easy clean."""
@@ -1196,19 +1224,21 @@ class NarwalClient:
         return await self.send_command(TOPIC_CMD_RECALL, timeout=timeout)
 
     async def set_fan_speed(self, level: FanLevel | int) -> CommandResponse:
-        """Set suction fan speed.
+        """Set suction fan speed live (clean/set_fan_level, field 1 = SweepFanLevel).
 
-        Args:
-            level: FanLevel enum or int (0=quiet, 1=normal, 2=strong, 3=max).
+        The live command's enum is SweepFanLevel, which has no SUPER — the app maps
+        FanLevel.SUPER -> STRONG here. Ints otherwise match FanLevel (MUTE 1, NORMAL 2,
+        STRONG 3, DEEP 4).
         """
-        payload = b"\x08" + bytes([int(level) & 0x7F])
+        live = FanLevel.STRONG if int(level) == FanLevel.SUPER else int(level)
+        payload = b"\x08" + bytes([live & 0x7F])
         return await self.send_command(TOPIC_CMD_SET_FAN_LEVEL, payload)
 
     async def set_mop_humidity(self, level: MopHumidity | int) -> CommandResponse:
-        """Set mop wetness level.
+        """Set mop water volume live (clean/set_mop_humidity, field 1 = MopHumidity).
 
         Args:
-            level: MopHumidity enum or int (0=dry, 1=normal, 2=wet).
+            level: MopHumidity enum or int (1=dry, 2=normal, 3=wet).
         """
         payload = b"\x08" + bytes([int(level) & 0x7F])
         return await self.send_command(TOPIC_CMD_SET_MOP_HUMIDITY, payload)

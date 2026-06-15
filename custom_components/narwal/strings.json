@@ -52,6 +52,37 @@
           "off": "Undocked"
         }
       }
+    },
+    "select": {
+      "work_mode": {
+        "name": "Clean mode",
+        "state": {
+          "vacuum": "Vacuum",
+          "mop": "Mop",
+          "vacuum_then_mop": "Vacuum then mop",
+          "vacuum_and_mop": "Vacuum and mop"
+        }
+      },
+      "water": {
+        "name": "Mopping humidity",
+        "state": {
+          "dry": "Slightly dry",
+          "normal": "Normal",
+          "wet": "Slightly wet"
+        }
+      },
+      "mop_strength": {
+        "name": "Mop strength",
+        "state": {
+          "normal": "Normal",
+          "high": "High"
+        }
+      }
+    },
+    "number": {
+      "passes": {
+        "name": "Cleaning passes"
+      }
     }
   }
 }
