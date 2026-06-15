@@ -35,6 +35,35 @@
       "firmware_version": {
         "name": "Version du firmware"
       },
+      "dust_bag_health": {
+        "name": "État du sac à poussière"
+      },
+      "detergent_remaining": {
+        "name": "Détergent restant"
+      },
+      "last_clean_result": {
+        "name": "Résultat du dernier nettoyage",
+        "state": {
+          "normal_end": "Terminé",
+          "user_force_end": "Arrêté par l'utilisateur",
+          "shutdown_force_end": "Terminé (extinction)",
+          "low_battery_force_end": "Terminé (batterie faible)",
+          "overflow_force_end": "Terminé (réservoir plein)",
+          "pause_too_long_force_end": "Terminé (pause trop longue)",
+          "system_error_force_end": "Terminé (erreur système)",
+          "user_force_end_on_station": "Arrêté à la station",
+          "user_force_end_on_app": "Arrêté depuis l'app",
+          "recall_end": "Rappelé à la base",
+          "normal_end_replenish_map_fail": "Terminé (échec mise à jour carte)",
+          "map_unmatched_force_end": "Terminé (carte non concordante)",
+          "relocation_fail_with_station_force_end": "Terminé (échec de relocalisation)",
+          "relocation_fail_without_station_force_end": "Terminé (échec de relocalisation, sans station)",
+          "pretask_error_force_end": "Terminé (erreur pré-tâche)",
+          "schedule_task_force_end": "Terminé (planification)",
+          "unexecuted": "Non exécuté",
+          "not_find_pet": "Animal introuvable"
+        }
+      },
       "charging_state": {
         "name": "Charge",
         "state": {
@@ -51,6 +80,28 @@
           "on": "Stationné",
           "off": "Non stationné"
         }
+      },
+      "error": {
+        "name": "Erreur",
+        "state": {
+          "on": "Problème",
+          "off": "OK"
+        }
+      },
+      "clean_water_tank": {
+        "name": "Réservoir d'eau propre"
+      },
+      "sewage_tank": {
+        "name": "Réservoir d'eau sale"
+      },
+      "dust_box": {
+        "name": "Bac à poussière"
+      },
+      "dust_bag": {
+        "name": "Sac à poussière"
+      },
+      "station_bag": {
+        "name": "Sac à poussière de la station"
       }
     },
     "select": {
