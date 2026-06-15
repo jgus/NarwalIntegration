@@ -18,7 +18,11 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .narwal_client import NarwalState
 
 from . import NarwalConfigEntry
-from .const import ERROR_HELP_URL_TEMPLATE
+from .const import (
+    CONSUMABLE_MAINTAIN_ITEMS,
+    CONSUMABLE_REPLACE_ITEMS,
+    ERROR_HELP_URL_TEMPLATE,
+)
 from .coordinator import NarwalCoordinator
 from .entity import NarwalEntity
 
@@ -63,6 +67,28 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[NarwalBinarySensorEntityDescription, ...] = (
                 {"help_url": ERROR_HELP_URL_TEMPLATE.format(code=s.error_codes[0])}
                 if s.error_codes else {}
             ),
+        } if s.raw_base_status else None,
+    ),
+    NarwalBinarySensorEntityDescription(
+        key="maintenance_required",
+        translation_key="maintenance_required",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # consumable/get_consumable_info maintainItems (clean/check these parts).
+        value_fn=lambda s: bool(s.maintain_items) if s.raw_base_status else None,
+        attrs_fn=lambda s: {
+            "items": [CONSUMABLE_MAINTAIN_ITEMS.get(i, str(i)) for i in s.maintain_items]
+        } if s.raw_base_status else None,
+    ),
+    NarwalBinarySensorEntityDescription(
+        key="replacement_required",
+        translation_key="replacement_required",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # consumable/get_consumable_info replaceItems (replace these parts).
+        value_fn=lambda s: bool(s.replace_items) if s.raw_base_status else None,
+        attrs_fn=lambda s: {
+            "items": [CONSUMABLE_REPLACE_ITEMS.get(i, str(i)) for i in s.replace_items]
         } if s.raw_base_status else None,
     ),
     NarwalBinarySensorEntityDescription(

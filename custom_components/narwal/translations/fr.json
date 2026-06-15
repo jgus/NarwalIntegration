@@ -102,6 +102,12 @@
       },
       "station_bag": {
         "name": "Sac à poussière de la station"
+      },
+      "maintenance_required": {
+        "name": "Entretien requis"
+      },
+      "replacement_required": {
+        "name": "Remplacement requis"
       }
     },
     "select": {

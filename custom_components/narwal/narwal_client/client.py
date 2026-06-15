@@ -31,6 +31,7 @@ from .const import (
     TOPIC_CMD_FORCE_END,
     TOPIC_CMD_GET_ALL_MAPS,
     TOPIC_CMD_GET_BASE_STATUS,
+    TOPIC_CMD_GET_CONSUMABLE_INFO,
     TOPIC_CMD_GET_CURRENT_TASK,
     TOPIC_CMD_GET_DEVICE_INFO,
     TOPIC_CMD_GET_FEATURE_LIST,
@@ -1318,6 +1319,12 @@ class NarwalClient:
     async def get_current_task(self) -> CommandResponse:
         """Query the current clean task."""
         return await self.send_command(TOPIC_CMD_GET_CURRENT_TASK)
+
+    async def get_consumable_info(self) -> CommandResponse:
+        """Query consumable maintain/replace alert lists (not broadcast)."""
+        resp = await self.send_command(TOPIC_CMD_GET_CONSUMABLE_INFO, timeout=15.0)
+        self.state.update_from_consumable_info(resp.data)
+        return resp
 
     async def get_map(self) -> MapData:
         """Download the full map data."""

@@ -253,6 +253,16 @@ class TestNarwalState:
         assert state.clean_water_tank_state == 2  # EMPTY
         assert state.station_bag_state == 3  # SUGGEST_REPLACE
 
+    def test_consumable_info_parse(self) -> None:
+        """consumable/get_consumable_info → maintain/replace alert lists; empty clears."""
+        state = NarwalState()
+        state.update_from_consumable_info({"1": {"1": [1, 9], "2": 8}})
+        assert state.maintain_items == [1, 9]  # dust_box, water_tank_sponge
+        assert state.replace_items == [8]  # dust_bag
+        state.update_from_consumable_info({"1": {}})  # healthy
+        assert state.maintain_items == []
+        assert state.replace_items == []
+
     def test_terminate_reason(self) -> None:
         """Field 15 = terminateReason (TaskResult)."""
         state = NarwalState()

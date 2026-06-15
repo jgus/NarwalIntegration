@@ -45,6 +45,7 @@ class TestCoordinatorResilience:
         coordinator.client.state = NarwalState()
         coordinator._consecutive_failures = 0
         coordinator._max_failures = 5
+        coordinator._consumable_poll_countdown = 99  # don't fire consumable poll in unit tests
         coordinator._fast_poll_remaining = 0
         coordinator._listen_task = None
         coordinator._map_fetch_pending = False

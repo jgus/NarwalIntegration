@@ -45,6 +45,22 @@ def test_no_help_url_when_healthy() -> None:
     assert "help_url" not in desc.attrs_fn(s)
 
 
+def test_consumable_alert_sensors() -> None:
+    """Maintenance/replacement sensors reflect the alert lists + name attributes."""
+    maint, repl = _DESCS["maintenance_required"], _DESCS["replacement_required"]
+    s = NarwalState()
+    assert maint.value_fn(s) is None  # no base_status yet
+    s.update_from_base_status({"2": 0})  # robot reachable
+    s.update_from_consumable_info({"1": {"1": [1], "2": [2, 8]}})
+    assert maint.value_fn(s) is True
+    assert maint.attrs_fn(s)["items"] == ["dust box"]
+    assert repl.value_fn(s) is True
+    assert repl.attrs_fn(s)["items"] == ["mop", "dust bag"]
+    s.update_from_consumable_info({"1": {}})
+    assert maint.value_fn(s) is False
+    assert repl.value_fn(s) is False
+
+
 def test_tank_problem_states() -> None:
     """Tank/bag sensors: None until reported, ok at value 1, problem at ≥2."""
     cw = _DESCS["clean_water_tank"].value_fn
