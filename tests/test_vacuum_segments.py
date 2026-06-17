@@ -251,3 +251,42 @@ class TestCheckSegmentChanges:
         vac._check_segment_changes()
 
         vac.async_create_segments_issue.assert_not_called()
+
+
+class TestAsyncStartWholeHouse:
+    """async_start runs a whole-house clean via start_rooms(all rooms), not the saved plan."""
+
+    async def test_enumerates_all_rooms(self) -> None:
+        """Whole-house start passes every room id to clean/start_clean, skipping plan/start."""
+        state = NarwalState()
+        state.map_data = MapData(map_id=2, rooms=[
+            RoomInfo(room_id=1), RoomInfo(room_id=2), RoomInfo(room_id=0),  # 0 filtered
+        ])
+        vac = _make_vacuum(state=state)
+        vac.coordinator.client.robot_awake = True
+        vac.coordinator.client.start_rooms = AsyncMock(
+            return_value=MagicMock(result_code=1, success=True)
+        )
+        vac.coordinator.client.start = AsyncMock()
+
+        await vac.async_start()
+
+        vac.coordinator.client.start_rooms.assert_awaited_once()
+        assert vac.coordinator.client.start_rooms.await_args.args[0] == [1, 2]
+        vac.coordinator.client.start.assert_not_called()
+
+    async def test_falls_back_to_saved_plan_without_map(self) -> None:
+        """With no map rooms available, falls back to the saved-plan start()."""
+        state = NarwalState()  # no map_data
+        vac = _make_vacuum(state=state)
+        vac.coordinator.client.robot_awake = True
+        vac.coordinator.client.get_map = AsyncMock()  # does not populate map_data
+        vac.coordinator.client.start = AsyncMock(
+            return_value=MagicMock(result_code=1, success=True)
+        )
+        vac.coordinator.client.start_rooms = AsyncMock()
+
+        await vac.async_start()
+
+        vac.coordinator.client.start.assert_awaited_once()
+        vac.coordinator.client.start_rooms.assert_not_called()

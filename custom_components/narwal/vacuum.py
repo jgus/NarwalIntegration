@@ -153,17 +153,55 @@ class NarwalVacuum(NarwalEntity, RestoreEntity, StateVacuumEntity):
         )
         if is_cleaning and state.is_paused:
             await self.coordinator.client.resume(timeout=self._ACTION_TIMEOUT)
-        else:
-            resp = await self.coordinator.client.start()
-            _LOGGER.info(
-                "Start command response: code=%s, success=%s",
-                resp.result_code, resp.success,
+            return
+
+        # Whole-house clean enumerates every room via clean/start_clean, matching the
+        # app's allRoomIds() path. clean/plan/start (StartWithPlan) would instead re-run
+        # the saved current plan — i.e. the last room selection — not the whole house.
+        room_ids = await self._all_room_ids()
+        if room_ids:
+            settings = self.coordinator.clean_settings
+            resp = await self.coordinator.client.start_rooms(
+                room_ids,
+                work_mode=settings.work_mode,
+                fan=settings.fan,
+                water=settings.water,
+                mop_strength=settings.mop_strength,
+                passes=settings.passes,
             )
-            if not resp.success:
-                _LOGGER.warning(
-                    "Start command did not succeed (code=%s) — robot may not have started",
-                    resp.result_code,
-                )
+        else:
+            # No map rooms known — best-effort fall back to the saved-plan start.
+            resp = await self.coordinator.client.start()
+        _LOGGER.info(
+            "Whole-house start: code=%s, success=%s, rooms=%s",
+            resp.result_code, resp.success, room_ids or "(saved plan)",
+        )
+        if not resp.success:
+            _LOGGER.warning(
+                "Start command did not succeed (code=%s) — robot may not have started",
+                resp.result_code,
+            )
+
+    async def _all_room_ids(self) -> list[int]:
+        """Every cleanable room id for a whole-house clean; fetches the map if not cached."""
+        state = self.coordinator.data
+        if state is None or state.map_data is None:
+            try:
+                await self.coordinator.client.get_map()
+            except Exception:  # noqa: BLE001 — best-effort prefetch; fall through to fallback
+                _LOGGER.debug("get_map for whole-house clean failed")
+            state = self.coordinator.data
+        if state and state.map_data:
+            return [r.room_id for r in state.map_data.rooms if r.room_id > 0]
+        # Map still unavailable — reuse the HA segment cache (Segment.id == str(room_id)).
+        cached = getattr(self, "last_seen_segments", None) or []
+        ids: list[int] = []
+        for seg in cached:
+            try:
+                ids.append(int(seg.id))
+            except (ValueError, AttributeError, TypeError):
+                continue
+        return ids
 
     async def async_stop(self, **kwargs) -> None:
         """Stop cleaning."""
