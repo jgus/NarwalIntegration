@@ -167,6 +167,16 @@ One shared app switch (`map_engine_i18n_configer.dart` over `MapBaseType.RoomTyp
 6 Toilet · 7 Balcony · 8 Dining Room · 9 Cloak Room · 10 Corridor · 11 Study ·
 12 Children's Room · 13 Recreation Room · 14 Utility Room · 15 Other`.
 
+### Room clean order (app/cloud-side — not exposed on the LAN)
+The app's configured whole-house clean order is **not readable over the local protocol**.
+Checked exhaustively (2026-06): reduced map and full `get_editable_map` (rooms carry only
+id/sub_type/name/category; `editConfig` is `{1:50}`); `cur_plan`/`plan/get`; and the order
+topics — `/clean/update_clean_order` and `/map/updateTaskOrder` both live in
+`sort_shortcut_task_requester.dart`, i.e. they reorder **scheduled shortcut tasks**, not the
+room sequence. The app holds the order app/cloud-side and sends rooms pre-sorted; the robot
+just executes the `CleanTask`'s per-item order (`CleanItem` field 3, live-confirmed not
+reordered). So **HA must own room ordering** — see the in-HA ordering TODO.
+
 ---
 
 ## Fixes (done, deployed live, validated)
@@ -181,10 +191,17 @@ Dining Room, etc.).
 `/clean/start_clean` with a real CleanTask; track the active `map_id` (`MapData.map_id`,
 get_map field 2.1); added `CommandResult.NOT_READY=4` + a docked-readiness retry.
 Generated request is byte-identical to a captured app clean; live room-2 clean confirmed
-(robot targeted Office). Removed the dead `_build_room_clean_payload`; whole-house
-`start()` (which uses `/clean/plan/start` + a default payload, and works) is unchanged.
+(robot targeted Office). Removed the dead `_build_room_clean_payload`.
 
-Both changes are on `working` here and currently deployed to the live instance.
+**Whole-house start.** `async_start` used `/clean/plan/start` (StartWithPlan), which replays
+the saved current plan — i.e. the last room selection — so a whole-house Start re-ran the
+previous room-subset clean. Now enumerates every cleanable room and cleans via `start_rooms`
+(`/clean/start_clean`), falling back to the saved-plan `start()` only when no map rooms are
+known. Live-confirmed kicking off an all-rooms clean. Commit `766909e` on `feat/clean-settings`
+(needs that branch's `clean_settings`), merged to `working`. Cleans in **map order**, not the
+app's custom order — see the room-clean-order note and the in-HA ordering TODO.
+
+These changes are on `working` here and currently deployed to the live instance.
 
 ## Open RE / next features
 
@@ -241,6 +258,14 @@ Both changes are on `working` here and currently deployed to the live instance.
       a clean ends); confirm push-vs-query delivery via a live capture on s2.
 - [ ] **New settings** — expose mop water level, coverage/passes, and clean mode
       (vacuum/mop/both) in the integration; wire each to the right CleanParam field.
+- [ ] **In-HA room ordering** — HA has no native whole-house clean-order concept (Segment =
+      `{id,name,group}`, no order field; `vacuum.clean_area`'s area selector is `reorder: true`
+      and preserves order into `async_clean_segments`, but that's the on-demand action, not the
+      Start button). Deployed HA 2026.5.4 (Segment API since 2026.3). Plan: a config-entry
+      OptionsFlow ordered room list; `vacuum._all_room_ids()` builds the whole-house list from
+      it (∩ known rooms, map-order fallback); reuse the segment-change repair flow for stale ids.
+      The wire already carries order (`CleanItem` field 3) and the robot honors it, so this
+      changes the physical clean order. Stacks on `766909e` (`feat/clean-settings`).
 - [ ] **Open PRs upstream** — #22 (room labels) and #25/#37 (room clean), as separate
       branches off `master`. Not yet pushed.
 - [ ] **Secondary issue reports** — segment-change log spam (re-fires every poll);
