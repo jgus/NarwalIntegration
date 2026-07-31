@@ -166,6 +166,12 @@ One shared app switch (`map_engine_i18n_configer.dart` over `MapBaseType.RoomTyp
 `0 Room · 1 Master Bedroom · 2 Second Bedroom · 3 Living Room · 4 Kitchen · 5 Bathroom ·
 6 Toilet · 7 Balcony · 8 Dining Room · 9 Cloak Room · 10 Corridor · 11 Study ·
 12 Children's Room · 13 Recreation Room · 14 Utility Room · 15 Other`.
+Ordering proven beyond switch order (2026-07-30, for the PR #48 revert): blutter's
+`pp.txt` pool dump (lines ~48138–48250) shows each `RoomType` instance's
+`ProtobufEnum.value` (`off_8`) + proto name (`off_10`) — e.g. 11=`ROOM_TYPE_STUDY`→
+`map_room_name_study_room`. Proto names use master's vocabulary at different ints
+(`ROOM_TYPE_SHOWER_ROOM`=5→"Bathroom", `ROOM_TYPE_UTILITY_ROOM`=14→"Storage room"),
+which is what misled master; the en-US.json JSON key order is also not enum order.
 
 ### Room clean order (app/cloud-side — not exposed on the LAN)
 The app's configured whole-house clean order is **not readable over the local protocol**.
@@ -267,7 +273,11 @@ These changes are on `working` here and currently deployed to the live instance.
       The wire already carries order (`CleanItem` field 3) and the robot honors it, so this
       changes the physical clean order. Stacks on `766909e` (`feat/clean-settings`).
 - [ ] **Open PRs upstream** — #22 (room labels) and #25/#37 (room clean), as separate
-      branches off `master`. Not yet pushed.
+      branches off `master`. Room labels went up as **upstream PR #48**: merged, then
+      reverted pre-release (`8f6d50f`) — maintainer confirmed the strings but wanted the
+      decompiled `roomTypei18nKey` body to prove ordering at 8–11 (comment 5133778732).
+      Evidence produced 2026-07-30 (see the pool-dump note in the ROOM_TYPE section);
+      once posted, maintainer relands in 1.0.2.
 - [ ] **Secondary issue reports** — segment-change log spam (re-fires every poll);
       now-obsolete product_key override gap (subsumed by the #22 base fix).
 - [ ] **Investigate room-9 quirk** — valid Music Room returned result 2 once; confirm
