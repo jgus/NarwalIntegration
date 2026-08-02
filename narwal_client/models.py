@@ -9,6 +9,11 @@ from typing import Any, ClassVar
 
 _LOGGER = logging.getLogger(__name__)
 
+# Raw working_status values already reported. The robot rebroadcasts its status
+# every ~1.5s, so warning on each broadcast floods the log with thousands of
+# identical lines (#46). Warn once per distinct value instead.
+_WARNED_WORKING_STATUS: set[Any] = set()
+
 from .const import CommandResult, FanLevel, MopHumidity, WorkingStatus
 
 
@@ -27,11 +32,7 @@ class RoomInfo:
 
     Fields from get_map / get_editable_map field 2.12:
       field 1: room_id (matches pixel value >> 8 in map grid)
-      field 2: room_sub_type — ROOM_TYPE enum from APK (0=unspecified,
-               1=main bedroom, 2=secondary room, 3=living room, 4=kitchen,
-               5=study, 6=bathroom, 7=dining room, 8=corridor, 9=balcony,
-               10=utility room, 11=cloak room, 12=nursery, 13=recreation,
-               14=shower room, 15=other)
+      field 2: room_sub_type — RoomType enum (MapBaseType.RoomType); see ROOM_TYPE_NAMES
       field 3: user-assigned name (UTF-8, empty if not named by user)
       field 4: category (1=room, 2=utility/small space)
       field 8: instance_index (1-based, for numbering duplicates: Bathroom 1, 2, 3...)
@@ -42,56 +43,33 @@ class RoomInfo:
     room_sub_type: int = 0  # ROOM_TYPE enum from field 2
     category: int = 0  # 1=room, 2=utility (field 4)
     instance_index: int = 0  # numbering for duplicates (field 8)
-    model_key: str = ""  # product_key — selects per-model name overrides
 
-    # ROOM_TYPE enum → default display name (from APK libapp.so string analysis)
-    ROOM_TYPE_NAMES: dict[int, str] = field(default=None, repr=False)
-
-    # Per-model overrides where Narwal renamed sub-types between models.
-    # Confirmed on Narwal Flow 2 (QxMSPG6VSO, firmware v01.07.16.01) — see #22.
-    MODEL_ROOM_TYPE_OVERRIDES: ClassVar[dict[str, dict[int, str]]] = {
-        "QxMSPG6VSO": {  # Flow 2
-            1: "Master Bedroom",
-            5: "Bathroom",
-            10: "Corridor",
-        },
+    # RoomType enum (MapBaseType.RoomType, 0-15) → the app's own en-US.json room-name strings. One shared switch (map_engine_i18n_configer.roomTypei18nKey) takes no model parameter, so every model resolves these same names. See #22.
+    ROOM_TYPE_NAMES: ClassVar[dict[int, str]] = {
+        0: "Room",
+        1: "Master bedroom",
+        2: "Secondary bedroom",
+        3: "Living room",
+        4: "Kitchen",
+        5: "Bathroom",
+        6: "Toilet",
+        7: "Balcony",
+        8: "Dining room",
+        9: "Closet",
+        10: "Corridor",
+        11: "Study",
+        12: "Kids' room",
+        13: "Entertainment room",
+        14: "Storage room",
+        15: "Others",
     }
-
-    def __post_init__(self):
-        if self.ROOM_TYPE_NAMES is None:
-            object.__setattr__(self, "ROOM_TYPE_NAMES", {
-                0: "Room",
-                1: "Primary Bedroom",
-                2: "Secondary Bedroom",
-                3: "Living Room",
-                4: "Kitchen",
-                5: "Study",
-                6: "Bathroom",
-                7: "Dining Room",
-                8: "Corridor",
-                9: "Balcony",
-                10: "Utility Room",
-                11: "Cloak Room",
-                12: "Nursery",
-                13: "Recreation Room",
-                14: "Shower Room",
-                15: "Other",
-            })
 
     @property
     def display_name(self) -> str:
-        """Return user name if set, otherwise generate default from ROOM_TYPE enum.
-
-        Matches Narwal app behavior: unnamed rooms show their type name
-        with an instance number suffix for duplicates (e.g. "Bathroom 2").
-        Per-model overrides apply where Narwal renamed sub-types (e.g. Flow 2
-        renames sub_type 1 → "Master Bedroom" vs Flow 1's "Primary Bedroom").
-        """
+        """User name if set, else the RoomType default name, with an instance-number suffix for duplicates ("Bathroom 2")."""
         if self.name:
             return self.name
-        overrides = self.MODEL_ROOM_TYPE_OVERRIDES.get(self.model_key, {})
-        base = overrides.get(self.room_sub_type) or \
-            self.ROOM_TYPE_NAMES.get(self.room_sub_type, "Room")
+        base = self.ROOM_TYPE_NAMES.get(self.room_sub_type, "Room")
         if self.instance_index > 1:
             return f"{base} {self.instance_index}"
         return base
@@ -256,16 +234,8 @@ class MapData:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_response(
-        cls, decoded: dict[str, Any], product_key: str = ""
-    ) -> MapData:
-        """Parse map data from a get_map field5 response.
-
-        Args:
-            decoded: blackboxprotobuf-decoded get_map response.
-            product_key: Device product key — propagated to RoomInfo so model-
-                specific room-type name overrides apply (see #22 for Flow 2).
-        """
+    def from_response(cls, decoded: dict[str, Any]) -> MapData:
+        """Parse map data from a get_map field5 response."""
         payload = decoded.get("2", {})
         if not payload:
             return cls()
@@ -292,7 +262,6 @@ class MapData:
                     room_sub_type=int(room.get("2", 0)),
                     category=int(room.get("4", 0)),
                     instance_index=int(room.get("8", 0)),
-                    model_key=product_key,
                 ))
 
         compressed = payload.get("17", b"")
@@ -494,32 +463,48 @@ class NarwalState:
     # Core status
     working_status: WorkingStatus = WorkingStatus.UNKNOWN
     battery_level: int = 0  # real-time SOC from field 2 (float32)
-    battery_health: int = 0  # static design capacity from field 38 (always 100)
     firmware_version: str = ""
     firmware_target: str = ""
 
     # Device identity
     device_info: DeviceInfo | None = None
 
-    # Session
-    session_id: str = ""
-    timestamp: int = 0
+    # Identity / station maintenance (base_status)
+    binded_uuid: str = ""  # field 13 — bound account/device UUID
+    station_bag_health_reset_time: int = 0  # field 36 — epoch of last bag-health reset
 
     # Position (from map data)
     position: Position | None = None
 
     # Cleaning stats
-    cleaning_area: int = 0  # cm²
+    cleaning_area: float = 0.0  # m² (coveredArea)
     cleaning_time: int = 0  # seconds
+
+    # Consumables / station / fault (base_status; present on dock and during cleaning)
+    dust_bag_health: float = 0.0  # field 35 stationBagHealthScore (%)
+    detergent_remaining: int = 0  # field 41 heavyDetergentRemainPercent (%)
+    curing_agent_consumption_percent: int = 0  # field 38
+    has_error: bool = False  # field 1 errorCode has an active code
+    error_codes: list[int] = field(default_factory=list)  # field 1 ErrorCode.identityCode(s)
+    error_level: int = 0  # ErrorCode.level (field 1 sub-2)
+    error_detail: str = ""  # ErrorCode.debugDetail (field 1 sub-3)
+
+    # Station tank/bag enum states (base_status; None = not reported by this model).
+    # 0=unspecified, 1=ok/installed, ≥2=attention (empty/abnormal/replace) — see BaseStatusField.
+    clean_water_tank_state: int | None = None  # field 23 (CleanWaterTankState)
+    sewage_tank_state: int | None = None  # field 24 (SewageTankState)
+    dust_box_state: int | None = None  # field 20 (DustBoxState)
+    dust_bag_state: int | None = None  # field 21 (DustBagState)
+    station_bag_state: int | None = None  # field 39 (StationBagStatus)
 
     # Map
     map_data: MapData | None = None
     map_display_data: MapDisplayData | None = None
 
-    # Vision obstacles (camera-detected transient objects during cleaning)
-    # Download/upgrade status
-    download_status: int = 0
-    upgrade_status_code: int = 0
+    # Download / upgrade status
+    download_status: int = 0  # download_status field 3 (state)
+    upgrade_status: int = 0  # upgrade_status field 2 (status)
+    upgrade_stage: int = 0  # upgrade_status field 4 (stage)
 
     # Pause overlay (field 3 sub-field 2 = 1 means paused)
     is_paused: bool = False
@@ -627,11 +612,13 @@ class NarwalState:
     def update_from_working_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded working_status message.
 
-        Confirmed via 35-min monitor capture (2026-02-27):
-          Field 3  = current session elapsed time (seconds)
-                     (confirmed: 2136→2159 over 35-min clean)
-          Field 13 = cleaning area (cm²) — CONFIRMED (18000 = 1.8m²)
-          Field 15 = 600 during cleaning (purpose uncertain)
+        WorkingStatus proto fields (decompiled BuilderInfo):
+          Field 2 = coveredArea (float32, PbFieldType 0x100) — area cleaned this session, m²
+          Field 3 = timeConsuming (seconds) — session elapsed time
+                    (confirmed: 2136→2159 over a 35-min clean)
+
+        Field 13 is totalDryStationBagTime (cumulative station timer, 18000 = 5h),
+        not area — reading it as area is why the sensor was stuck at 1.8 m².
         """
         self.raw_working_status = decoded
         if "3" in decoded:
@@ -639,11 +626,10 @@ class NarwalState:
                 self.cleaning_time = int(decoded["3"])
             except (ValueError, TypeError):
                 pass
-        if "13" in decoded:
-            self.cleaning_area = int(decoded["13"])
-        if "15" in decoded:
-            # Field 15 may be cumulative time; prefer field 3 for current session
-            pass
+        if "2" in decoded:
+            area = _to_float32(decoded["2"])
+            if area is not None and area >= 0:
+                self.cleaning_area = area
 
     def update_from_base_status(self, decoded: dict[str, Any]) -> None:
         """Update state from a decoded robot_base_status message.
@@ -693,11 +679,14 @@ class NarwalState:
                     self.working_status = WorkingStatus(int(field3["1"]))
                 except (ValueError, TypeError):
                     raw_val = field3["1"]
-                    _LOGGER.warning(
-                        "Unknown working_status value: %s — treating as UNKNOWN. "
-                        "Please report this value at the GitHub repo.",
-                        raw_val,
-                    )
+                    if raw_val not in _WARNED_WORKING_STATUS:
+                        _WARNED_WORKING_STATUS.add(raw_val)
+                        _LOGGER.warning(
+                            "Unknown working_status value: %s — treating as UNKNOWN. "
+                            "Please report this value at the GitHub repo. "
+                            "(further occurrences of this value are suppressed)",
+                            raw_val,
+                        )
                     self.working_status = WorkingStatus.UNKNOWN
             # Sub-field 2: paused overlay (0 or absent = not paused, 1 = paused)
             self.is_paused = bool(field3.get("2"))
@@ -735,45 +724,93 @@ class NarwalState:
                 type(field3).__name__, field3,
             )
         if "2" in decoded:
-            # Field 2 = real-time battery SOC as float32
+            # Field 2 = real-time battery SOC as float32 (batteryPercentage)
             # (e.g. 1118175232 → 83.0%; bbp may return int or float)
             bat = _to_float32(decoded["2"])
             if bat is not None:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            # Field 38 = static battery health (always 100, design capacity)
-            self.battery_health = int(decoded["38"])
-        if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+        self._update_consumables(decoded)
         if "13" in decoded:
             raw = decoded["13"]
             if isinstance(raw, bytes):
-                self.session_id = raw.decode("utf-8", errors="replace")
+                self.binded_uuid = raw.decode("utf-8", errors="replace")
             else:
-                self.session_id = str(raw)
-                if self.session_id.startswith("b'"):
-                    self.session_id = self.session_id[2:-1]
+                self.binded_uuid = str(raw)
+                if self.binded_uuid.startswith("b'"):
+                    self.binded_uuid = self.binded_uuid[2:-1]
+
+    def _update_consumables(self, decoded: dict[str, Any]) -> None:
+        """Parse base_status consumable/station/fault fields — hardware-sampled, so trustworthy even in deep-sleep battery-only updates."""
+        if "35" in decoded:
+            score = _to_float32(decoded["35"])
+            if score is not None:
+                self.dust_bag_health = score
+        if "41" in decoded:
+            self.detergent_remaining = int(decoded["41"])
+        if "38" in decoded:
+            self.curing_agent_consumption_percent = int(decoded["38"])
+        if "36" in decoded:
+            self.station_bag_health_reset_time = int(decoded["36"])
+        # Always reparse (even when field 1 is absent) — protobuf omits an empty repeated field, so a recovered robot drops it; without this the prior fault would stick forever.
+        self._parse_error_codes(decoded.get("1"))
+        for attr, key in (
+            ("clean_water_tank_state", "23"), ("sewage_tank_state", "24"),
+            ("dust_box_state", "20"), ("dust_bag_state", "21"),
+            ("station_bag_state", "39"),
+        ):
+            if key in decoded:
+                try:
+                    setattr(self, attr, int(decoded[key]))
+                except (ValueError, TypeError):
+                    pass
+
+    def _parse_error_codes(self, raw: Any) -> None:
+        """Decode base_status field 1 (repeated ErrorCode{1:identityCode, 2:level, 3:debugDetail}).
+
+        Empty/zero codes mean no active fault. bbp gives a dict for one entry, a list for many.
+        """
+        entries = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+        codes: list[int] = []
+        level = 0
+        detail = ""
+        for entry in entries:
+            if not isinstance(entry, dict) or not entry.get("1"):
+                continue
+            try:
+                codes.append(int(entry["1"]))
+            except (ValueError, TypeError):
+                continue
+            try:
+                level = max(level, int(entry.get("2", 0)))
+            except (ValueError, TypeError):
+                pass
+            raw_detail = entry.get("3")
+            if isinstance(raw_detail, bytes):
+                detail = detail or raw_detail.decode("utf-8", errors="replace")
+            elif isinstance(raw_detail, str):
+                detail = detail or raw_detail
+        self.error_codes = codes
+        self.error_level = level
+        self.error_detail = detail
+        self.has_error = bool(codes)
 
     def update_battery_from_base_status(self, decoded: dict[str, Any]) -> None:
-        """Update ONLY hardware-sampled fields from a base_status response.
+        """Update only the trustworthy hardware-sampled fields (battery + consumable/station/fault/tank state, via _update_consumables) from a base_status response.
 
-        Used when the robot is not broadcasting (deep sleep on dock).
-        In this mode, get_status() returns current battery (hardware counter)
-        but stale working_status (firmware cache from last active session).
-        We update only the fields we can trust.
+        Used when the robot is not broadcasting (deep sleep on dock): get_status() returns a current battery counter but a stale working_status (firmware cache from the last active session), so working_status is deliberately skipped.
         """
         self.raw_base_status = decoded
         if "2" in decoded:
             bat = _to_float32(decoded["2"])
             if bat is not None:
                 self.battery_level = round(bat)
-        if "38" in decoded:
-            self.battery_health = int(decoded["38"])
-        if "36" in decoded:
-            self.timestamp = int(decoded["36"])
+        self._update_consumables(decoded)
 
     def update_from_upgrade_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded upgrade_status message."""
+        """Update state from a decoded upgrade_status message.
+
+        Fields: 2 status, 4 stage, 7 currentVersion, 8 targetVersion.
+        """
         if "7" in decoded:
             raw = decoded["7"]
             if isinstance(raw, bytes):
@@ -790,10 +827,15 @@ class NarwalState:
                 self.firmware_target = str(raw)
                 if self.firmware_target.startswith("b'"):
                     self.firmware_target = self.firmware_target[2:-1]
+        if "2" in decoded:
+            self.upgrade_status = int(decoded["2"])
         if "4" in decoded:
-            self.upgrade_status_code = int(decoded["4"])
+            self.upgrade_stage = int(decoded["4"])
 
     def update_from_download_status(self, decoded: dict[str, Any]) -> None:
-        """Update state from a decoded download_status message."""
-        if "1" in decoded:
-            self.download_status = int(decoded["1"])
+        """Update state from a decoded download_status message (voice/timbre pack).
+
+        Field 3 = state; field 1 is `type` (download category), not status.
+        """
+        if "3" in decoded:
+            self.download_status = int(decoded["3"])

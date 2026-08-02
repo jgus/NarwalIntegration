@@ -2,7 +2,20 @@
 
 A fully **local, cloud-independent** [Home Assistant](https://www.home-assistant.io/) custom integration for Narwal robot vacuums. Communicates directly with your vacuum over your local network via WebSocket — no cloud account or internet connection required.
 
-> **v1.0.0** — Vacuum control, sensors, live map with room labels, obstacle overlay, and room-specific cleaning. Available via HACS.
+> **v1.0.1** — Vacuum control, sensors, live map with room labels, and obstacle overlay. Available via HACS.
+
+> ### ⚠️ Known broken in v1.0.1
+>
+> Community reverse-engineering in July 2026 found that **room-specific cleaning has never worked correctly**. The integration sends clean commands to `clean/plan/start`, which ignores the payload and runs whatever plan is stored on the robot. Three contributors confirmed this independently ([#37](https://github.com/sjmotew/NarwalIntegration/issues/37)).
+>
+> | Issue | Impact | Fix |
+> |---|---|---|
+> | **Room cleaning ignores your selection** | The robot cleans its last plan or your first Narwal-app shortcut instead of the rooms you picked. On **Flow 2** it can also clear the map stored on the robot, which you then have to reopen manually in the Narwal app ([#55](https://github.com/sjmotew/NarwalIntegration/issues/55)) | [#49](https://github.com/sjmotew/NarwalIntegration/pull/49) |
+> | **Wrong room type labels** | Unnamed rooms show incorrect types on all models. The lookup table is misaligned from index 5 — e.g. a bathroom may display as "Study". Rooms you have named in the Narwal app are unaffected. The fix is written but its enum ordering is not yet confirmed, so it is deliberately held back rather than shipped wrong twice | [#48](https://github.com/sjmotew/NarwalIntegration/pull/48) |
+>
+> **Fixed in v1.0.1:** the cleaning-area sensor now reports real covered area instead of a constant 1.8 m² ([#51](https://github.com/sjmotew/NarwalIntegration/pull/51)).
+>
+> **Until the room-clean fix ships, start cleans from the Narwal app rather than Home Assistant if you are on a Flow 2.** Whole-house `vacuum.start` is also affected on newer firmware — it reports success and does nothing ([#69](https://github.com/sjmotew/NarwalIntegration/issues/69)). Status, sensors, and the map are unaffected. Progress is tracked in [#66](https://github.com/sjmotew/NarwalIntegration/issues/66).
 
 ## Device Compatibility
 
@@ -10,10 +23,12 @@ This integration uses a **local WebSocket connection on port 9002**. Only models
 
 | Model | Status | Notes |
 |-------|--------|-------|
-| **Narwal Flow** (AX12) | **Working** | Primary development target. Firmware v01.07.22+ requires a loaded map for `vacuum.start` (auto-fallback handles this — see [#36](https://github.com/sjmotew/NarwalIntegration/issues/36)). |
-| **Narwal Flow 2** (QxMSPG6VSO) | **Working** | Room labels use Flow 2 names (Master Bedroom / Bathroom / Corridor — [#22](https://github.com/sjmotew/NarwalIntegration/issues/22)) |
+| **Narwal Flow** (AX12) | **Working** | Primary development target. On firmware v01.07.22+, `vacuum.start` needs a loaded map ([#36](https://github.com/sjmotew/NarwalIntegration/issues/36)). |
+| **Narwal Flow 2** (QxMSPG6VSO) | **Working** | See the room-cleaning warning above before using `vacuum.clean_area` |
 | **Freo Z10 Ultra** (CX4) | **Working** | Community confirmed |
+| **Freo Z10 Pro / Turbo** (AX26) | **Working** | Same product key and firmware (v01.02.00.15) reported under both names ([#40](https://github.com/sjmotew/NarwalIntegration/issues/40), [#70](https://github.com/sjmotew/NarwalIntegration/issues/70)). Room cleaning confirmed working with [#49](https://github.com/sjmotew/NarwalIntegration/pull/49). |
 | **Freo X10 Pro** (AX15) | **Working** | Community confirmed ([#12](https://github.com/sjmotew/NarwalIntegration/issues/12)) |
+| **Narwal JX** | **Unconfirmed** | Product key known, no working report yet — testers welcome ([#42](https://github.com/sjmotew/NarwalIntegration/issues/42)) |
 | **Freo Z Ultra** (CX7) | **Not Compatible** | Port 9002 open but no local broadcasts; cloud-only ([#5](https://github.com/sjmotew/NarwalIntegration/issues/5), confirmed by @Folg0re) |
 | **Freo X Ultra** (AX18/AX19) | **Not Compatible** | Uses ZeroMQ (port 6789) + Tuya cloud, not WebSocket ([#4](https://github.com/sjmotew/NarwalIntegration/issues/4)) |
 | **Freo X Plus** | **Not Compatible** | Cloud-only — no local API |
@@ -26,14 +41,15 @@ Models marked **Not Compatible** use a different protocol or are cloud-only. Thi
 ## Features
 
 ### Vacuum Control
-- **Start / Stop / Pause / Resume** — all commands validated on hardware
-- **Room-specific cleaning** — select rooms from the HA UI (requires HA 2026.3+)
+- **Start / Stop / Pause / Resume** — validated on hardware (see the note above for `start` on newer Flow firmware)
 - **Return to dock** / **Locate** (robot announces "Robot is here")
 - **Fan speed** — Quiet, Normal, Strong, Max (set-only; robot doesn't broadcast current level)
+- **Room-specific cleaning** — exposed in the HA UI (requires HA 2026.3+), but **currently broken** — see the warning above
 
 ### Sensors
-- Battery level, cleaning area, cleaning time, firmware version
+- Battery level, cleaning time, firmware version
 - Docked status (binary sensor), charging state (Charging / Fully Charged / Not Charging)
+- Cleaning area — present but **currently reports a fixed 1.8 m²** ([#51](https://github.com/sjmotew/NarwalIntegration/pull/51))
 
 ### Live Map
 - Color-coded floor plan with room labels (all rooms — user-named and auto-generated)
@@ -100,7 +116,8 @@ Camera snapshot and LED entities will be added once the AES decryption key is ex
 
 | Problem | Solution |
 |---------|----------|
-| "Cannot connect" during setup | Verify IP and that port 9002 is reachable. Robot must be powered on. |
+| "Cannot connect" during setup | Verify IP and that port 9002 is reachable. If it still fails, **open the Narwal app on your phone the moment you press Submit** — a sleeping robot may not answer within the setup timeout ([#40](https://github.com/sjmotew/NarwalIntegration/issues/40)). |
+| Room cleaning runs the wrong rooms | Known bug — see the warning at the top of this page ([#37](https://github.com/sjmotew/NarwalIntegration/issues/37)). |
 | Entities show "Unavailable" | Robot may be asleep. Open Narwal app briefly to wake it. |
 | Map not showing | Map loads after robot wakes. A new clean refreshes a stale map. |
 | Commands not responding | Close the Narwal app — only one WebSocket connection at a time. |

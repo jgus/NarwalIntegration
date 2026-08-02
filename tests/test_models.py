@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import struct
 
 from narwal_client.const import WorkingStatus
@@ -29,9 +30,12 @@ class TestNarwalState:
     def test_update_from_working_status(self) -> None:
         """working_status topic sets cleaning metrics, not robot state."""
         state = NarwalState()
-        state.update_from_working_status({"3": 120, "13": 18000, "15": 600})
+        # Field 2 = coveredArea (float32, m²); field 13 = totalDryStationBagTime, ignored.
+        state.update_from_working_status(
+            {"2": _float_to_uint32(12.5), "3": 120, "13": 18000}
+        )
         assert state.cleaning_time == 120
-        assert state.cleaning_area == 18000
+        assert state.cleaning_area == 12.5
         # working_status is NOT set by this method (comes from base_status)
         assert state.working_status == WorkingStatus.UNKNOWN
 
@@ -59,7 +63,7 @@ class TestNarwalState:
         assert state.working_status == WorkingStatus.CHARGED
         assert state.is_docked
         assert state.battery_level == 100
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
 
     def test_update_from_base_status_standby_on_dock(self) -> None:
         """STANDBY(1) with dock sub-state=1 means docked."""
@@ -190,6 +194,24 @@ class TestNarwalState:
         state.update_from_base_status({"3": {"1": 99}})
         assert state.working_status == WorkingStatus.UNKNOWN
 
+    def test_unknown_working_status_warns_once(self, caplog) -> None:
+        """Repeated unknown values warn once, not once per broadcast (#46).
+
+        The robot rebroadcasts status every ~1.5s; warning each time floods
+        the log with thousands of identical lines.
+        """
+        from narwal_client import models as models_mod
+
+        models_mod._WARNED_WORKING_STATUS.discard(17)
+        state = NarwalState()
+        with caplog.at_level(logging.WARNING, logger=models_mod.__name__):
+            for _ in range(50):
+                state.update_from_base_status({"3": {"1": 17}})
+
+        warnings = [r for r in caplog.records if "Unknown working_status" in r.message]
+        assert len(warnings) == 1
+        assert state.working_status == WorkingStatus.UNKNOWN
+
     def test_update_from_base_status(self) -> None:
         state = NarwalState()
         state.update_from_base_status({
@@ -199,37 +221,87 @@ class TestNarwalState:
             "13": "d4bec8c82c484a3ba0428bb0dd4359e2",
         })
         assert state.battery_level == 85
-        assert state.battery_health == 100
-        assert state.timestamp == 1757252225
-        assert state.session_id == "d4bec8c82c484a3ba0428bb0dd4359e2"
+        assert state.curing_agent_consumption_percent == 100
+        assert state.station_bag_health_reset_time == 1757252225
+        assert state.binded_uuid == "d4bec8c82c484a3ba0428bb0dd4359e2"
+
+    def test_base_status_consumables_and_error(self) -> None:
+        """Field 35 dust-bag health (float32 %), 41 detergent %, 1 errorCode presence."""
+        state = NarwalState()
+        state.update_from_base_status({
+            "1": {},  # empty errorCode = no fault
+            "35": _float_to_uint32(68.5),
+            "41": 100,
+        })
+        assert round(state.dust_bag_health, 1) == 68.5
+        assert state.detergent_remaining == 100
+        assert state.has_error is False
+        assert state.error_codes == []
+        # A populated ErrorCode flips has_error on and exposes code/level/detail.
+        state.update_from_base_status({"1": {"1": 2105, "2": 3, "3": b"wheel stuck"}})
+        assert state.has_error is True
+        assert state.error_codes == [2105]
+        assert state.error_level == 3
+        assert state.error_detail == "wheel stuck"
+        # Clears when the next base_status reports an empty errorCode.
+        state.update_from_base_status({"1": {}})
+        assert state.has_error is False
+        assert state.error_codes == []
+
+    def test_multiple_error_codes(self) -> None:
+        """Repeated ErrorCode (bbp list) collects all identityCodes, max level."""
+        state = NarwalState()
+        state.update_from_base_status({"1": [{"1": 10, "2": 1}, {"1": 20, "2": 4}]})
+        assert state.error_codes == [10, 20]
+        assert state.error_level == 4
+        assert state.has_error is True
+
+    def test_base_status_tank_states(self) -> None:
+        """Tank/bag enum states parse into Optional ints; unreported stays None."""
+        state = NarwalState()
+        # Live healthy snapshot: clean-water/sewage ok (1), dust box ok (1),
+        # station bag installed (1). No dust-bag field on this model.
+        state.update_from_base_status({"23": 1, "24": 1, "20": 1, "39": 1})
+        assert state.clean_water_tank_state == 1
+        assert state.sewage_tank_state == 1
+        assert state.dust_box_state == 1
+        assert state.station_bag_state == 1
+        assert state.dust_bag_state is None  # not reported by this model
+        # Attention states.
+        state.update_from_base_status({"23": 2, "39": 3})
+        assert state.clean_water_tank_state == 2  # EMPTY
+        assert state.station_bag_state == 3  # SUGGEST_REPLACE
 
     def test_update_from_upgrade_status(self) -> None:
         state = NarwalState()
         state.update_from_upgrade_status({
             "7": "v01.02.19.02",
             "8": "v01.02.19.02",
+            "2": 3,
             "4": 10,
         })
         assert state.firmware_version == "v01.02.19.02"
         assert state.firmware_target == "v01.02.19.02"
-        assert state.upgrade_status_code == 10
+        assert state.upgrade_status == 3
+        assert state.upgrade_stage == 10
 
     def test_update_from_download_status(self) -> None:
+        # Field 3 = state (field 1 is download type, ignored).
         state = NarwalState()
-        state.update_from_download_status({"1": 2})
+        state.update_from_download_status({"1": 5, "3": 2})
         assert state.download_status == 2
 
     def test_incremental_updates(self) -> None:
         """State should accumulate across multiple topic updates."""
         state = NarwalState()
         state.update_from_base_status({"3": {"1": 4}, "2": _float_to_uint32(95.0)})
-        state.update_from_working_status({"3": 120, "13": 18000})
+        state.update_from_working_status({"3": 120, "2": _float_to_uint32(12.5)})
         state.update_from_upgrade_status({"7": "v01.02.19.02"})
 
         assert state.battery_level == 95
         assert state.is_cleaning
         assert state.cleaning_time == 120
-        assert state.cleaning_area == 18000
+        assert state.cleaning_area == 12.5
         assert state.firmware_version == "v01.02.19.02"
 
     def test_raw_data_preserved(self) -> None:
@@ -256,11 +328,11 @@ class TestNarwalState:
         state.update_from_base_status({"2": 83.0})
         assert state.battery_level == 83
 
-    def test_battery_health_field38_static(self) -> None:
-        """Field 38 is static battery health (always 100), not real-time SOC."""
+    def test_field38_curing_agent_not_battery(self) -> None:
+        """Field 38 is curingAgentConsumptionPercent, not battery SOC/health."""
         state = NarwalState()
         state.update_from_base_status({"38": 100})
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
         # battery_level unchanged (no field 2)
         assert state.battery_level == 0
 
@@ -291,7 +363,7 @@ class TestNarwalState:
 
         # Battery updated, working_status preserved from last authoritative source
         assert state.battery_level == 85
-        assert state.battery_health == 100
+        assert state.curing_agent_consumption_percent == 100
         assert state.working_status == WorkingStatus.DOCKED  # NOT overwritten
         assert state.is_docked  # still correct
 
@@ -589,48 +661,40 @@ class TestParseObstacles:
 
 
 
-class TestRoomInfoModelOverrides:
-    """Tests for per-model ROOM_TYPE_NAMES overrides (issue #22)."""
+class TestRoomInfoNames:
+    """Tests for the shared RoomType→name table (issue #22).
 
-    def test_flow_1_uses_default_names(self) -> None:
-        """Flow 1 (no/empty model_key) keeps the original sub-type names."""
-        room = RoomInfo(room_id=1, room_sub_type=1)
-        assert room.display_name == "Primary Bedroom"
-        room = RoomInfo(room_id=5, room_sub_type=5)
-        assert room.display_name == "Study"
-        room = RoomInfo(room_id=10, room_sub_type=10)
-        assert room.display_name == "Utility Room"
+    The app names rooms through one switch keyed only on the RoomType enum (no model parameter), so every model resolves the same names — taken verbatim from the app's en-US.json.
+    """
 
-    def test_flow_2_overrides_apply(self) -> None:
-        """Flow 2 product key renames sub-types 1, 5, 10."""
-        flow2 = "QxMSPG6VSO"
-        assert RoomInfo(room_sub_type=1, model_key=flow2).display_name == "Master Bedroom"
-        assert RoomInfo(room_sub_type=5, model_key=flow2).display_name == "Bathroom"
-        assert RoomInfo(room_sub_type=10, model_key=flow2).display_name == "Corridor"
+    def test_shared_table_names(self) -> None:
+        """Every RoomType resolves to its verbatim en-US.json name."""
+        expected = {
+            0: "Room", 1: "Master bedroom", 2: "Secondary bedroom",
+            3: "Living room", 4: "Kitchen", 5: "Bathroom", 6: "Toilet",
+            7: "Balcony", 8: "Dining room", 9: "Closet", 10: "Corridor",
+            11: "Study", 12: "Kids' room", 13: "Entertainment room",
+            14: "Storage room", 15: "Others",
+        }
+        for sub_type, name in expected.items():
+            assert RoomInfo(room_sub_type=sub_type).display_name == name
 
-    def test_flow_2_non_overridden_types_use_defaults(self) -> None:
-        """Sub-types not in the Flow 2 override map use the base names."""
-        flow2 = "QxMSPG6VSO"
-        assert RoomInfo(room_sub_type=3, model_key=flow2).display_name == "Living Room"
-        assert RoomInfo(room_sub_type=4, model_key=flow2).display_name == "Kitchen"
-        assert RoomInfo(room_sub_type=6, model_key=flow2).display_name == "Bathroom"
-
-    def test_user_assigned_name_wins_over_override(self) -> None:
-        """A user-assigned name always wins, regardless of model overrides."""
-        room = RoomInfo(
-            room_sub_type=5, model_key="QxMSPG6VSO", name="Powder Room"
-        )
+    def test_user_assigned_name_wins(self) -> None:
+        """A user-assigned name always wins over the table."""
+        room = RoomInfo(room_sub_type=5, name="Powder Room")
         assert room.display_name == "Powder Room"
 
-    def test_instance_index_appends_to_overridden_name(self) -> None:
-        """Duplicate Flow 2 bathrooms number as Bathroom 2, 3..."""
-        room = RoomInfo(
-            room_sub_type=5, model_key="QxMSPG6VSO", instance_index=2
-        )
+    def test_instance_index_appends(self) -> None:
+        """Duplicate rooms get an instance-number suffix (Bathroom 2)."""
+        room = RoomInfo(room_sub_type=5, instance_index=2)
         assert room.display_name == "Bathroom 2"
 
-    def test_map_data_from_response_propagates_product_key(self) -> None:
-        """get_map parse pushes product_key into every RoomInfo."""
+    def test_unknown_sub_type_falls_back_to_room(self) -> None:
+        """An out-of-range sub-type falls back to the default name."""
+        assert RoomInfo(room_sub_type=99).display_name == "Room"
+
+    def test_map_data_from_response_resolves_names(self) -> None:
+        """get_map parse resolves room names via the shared table."""
         decoded = {
             "2": {
                 "12": [
@@ -639,14 +703,6 @@ class TestRoomInfoModelOverrides:
                 ],
             }
         }
-        map_data = MapData.from_response(decoded, product_key="QxMSPG6VSO")
-        names = [r.display_name for r in map_data.rooms]
-        assert names == ["Master Bedroom", "Bathroom 2"]
-
-    def test_map_data_from_response_default_no_key(self) -> None:
-        """Omitting product_key keeps the original behavior unchanged."""
-        decoded = {
-            "2": {"12": [{"1": 1, "2": 1, "3": b"", "4": 1, "8": 1}]},
-        }
         map_data = MapData.from_response(decoded)
-        assert map_data.rooms[0].display_name == "Primary Bedroom"
+        names = [r.display_name for r in map_data.rooms]
+        assert names == ["Master bedroom", "Bathroom 2"]

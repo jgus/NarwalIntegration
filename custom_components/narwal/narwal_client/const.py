@@ -25,6 +25,9 @@ KNOWN_PRODUCT_KEYS = [
     "QoEsI5qYXO",  # AX12 — Narwal Flow (primary, confirmed)
     "QxMSPG6VSO",  # Narwal Flow 2 (confirmed working via local WebSocket)
     "DrzDKQ0MU8",   # CX4  — Freo Z10 Ultra (confirmed by @irekkl-maker)
+    # AX26 — sold as both "Freo Z10 Turbo" (@romedtino, #40) and "Freo Z10 Pro"
+    # (@shin906710, #70); same key, same FW v01.02.00.15, so one platform.
+    "qV6BujoYLz",   # AX26 — Freo Z10 Pro / Turbo (confirmed local WebSocket)
     # Confirmed cloud-only (port 9002 open but no local broadcasts)
     "BYWBPqSxeC",   # CX7  — Freo Z Ultra (cloud-only, confirmed by @gabrielozcomidi)
     # Confirmed cloud-only (ZeroMQ port 6789, no WebSocket)
@@ -38,7 +41,6 @@ KNOWN_PRODUCT_KEYS = [
     "E9Q8aDzUbp",   # AX17
     "jI5rHi4mKa",   # AX24
     "UuTSLsMce4",   # AX25
-    "qV6BujoYLz",   # AX26
     "88OLXLpkjT",   # BX4  (note: APK also has 3rIGshGNAj — may vary by FW revision)
     "3rIGshGNAj",   # BX4/Y1 alternate key (APK, contributed by @northwestsupra)
     "7sSZZ4XfTI",   # CX2
@@ -48,6 +50,7 @@ KNOWN_PRODUCT_KEYS = [
     "EHf6cRNRGT",   # J4 / J4Pure (APK, contributed by @northwestsupra)
     "6NjIDYxBXb",   # J4Lite (APK, contributed by @northwestsupra)
     "hEA7OEshlx",   # J5  (APK, contributed by @northwestsupra)
+    "CGjuB6dzq7",   # JX — Narwal JX (APK, contributed by @ciaoly, #42)
     "cUlfJN5JYP",   # Unknown model (APK, contributed by @northwestsupra)
 ]
 
@@ -96,6 +99,7 @@ TOPIC_CMD_GET_ALL_MAPS = "map/get_all_reduced_maps"
 # Camera (developer commands)
 TOPIC_CMD_TAKE_PICTURE = "developer/take_picture"
 TOPIC_CMD_SET_LED = "developer/led_control"
+TOPIC_CMD_GET_DEBUG_IMAGE = "developer/get_robot_debug_image"  # cleartext carpet/planning PNGs
 
 # Wake / Keep-alive (from APK analysis — candidates for waking sleeping robot)
 TOPIC_CMD_ACTIVE_ROBOT = "common/active_robot_publish"  # TopicDuration keepalive
@@ -146,11 +150,18 @@ class CommandResult(IntEnum):
 class WorkingStatus(IntEnum):
     """Robot working state from robot_base_status field 3 → sub-field 1.
 
+    These values are EMPIRICAL and intentionally do NOT match the app's compiled
+    RobotTaskStatus.TaskType enum (sub-field 1's declared type): on this firmware
+    the robot reports e.g. 14=charged where TaskType 14=WASH_AND_DRY_MOP. Trust
+    the live-observed mapping below, not re/ENUMS.md, for this field (and f47).
+
     Values confirmed via live WebSocket monitoring:
       1  = STANDBY (idle, transition state between cleaning and docked)
       2  = DOCKED_V2 (on dock; confirmed v01.07.23.00 while charging at 10-36%)
       4  = CLEANING (plan-based start; also stays 4 while returning to dock on older FW)
       5  = CLEANING_ALT (observed live: robot was physically stuck when reporting 5)
+      7  = REMAPPING (live 2026-07-09: robot exploring/rebuilding the map; camera
+           active — developer/take_picture is accepted in this state)
       10 = DOCKED (on dock, charging)
       14 = CHARGED (on dock, fully charged)
       19 = TASK_COMPLETED (transitional: scheduled task finished, returning to base)
@@ -170,6 +181,7 @@ class WorkingStatus(IntEnum):
     DOCKED_V2 = 2     # on dock (v01.07.23.00+ — replaces DOCKED=10/CHARGED=14 from older FW)
     CLEANING = 4      # active cleaning (stays 4 even while returning to dock)
     CLEANING_ALT = 5  # cleaning — observed when robot was physically stuck; may indicate error/stuck state
+    REMAPPING = 7     # mapping/exploration (live 2026-07-09); camera active, take_picture accepted
     DOCKED = 10       # on dock (does NOT reliably indicate charging vs charged)
     CHARGED = 14      # on dock (reported before 100% — use battery_level for charge state)
     TASK_COMPLETED = 19  # transitional: task finished, robot returning to base (#41)
@@ -197,28 +209,42 @@ class MopHumidity(IntEnum):
 
 # robot_base_status field numbers
 class BaseStatusField(IntEnum):
-    """Field numbers in the robot_base_status protobuf message.
+    """Field numbers in the robot_base_status (RobotBaseStatus) message.
 
-    Battery notes (confirmed via 35-min monitor capture, 2026-02-27):
-      Field 2  = real-time battery level as IEEE 754 float32
-                 (e.g. 1118175232 → 83.0%, matching app display ~84%)
-      Field 38 = static battery health (always 100; design capacity, not SOC)
+    Names from the decompiled BuilderInfo, several live-validated on dock.
+    Field 2 is float32 (PbFieldType 0x100), e.g. 1120403456 → 100.0.
+    Most state fields (5,11,12,14,15,20-24,26,28,29,31,33,39,40,42,47,49,50)
+    are enums whose value→label tables are not yet decoded.
     """
 
-    BATTERY_LEVEL = 2  # real-time SOC as float32 — CONFIRMED
-    MODE_STATE = 3
-    SESSION_ID = 13
-    SENSOR_DATA = 25
-    TIMESTAMP = 36
-    BATTERY_HEALTH = 38  # static, always 100 (design capacity)
-    BATTERY_CAPACITY = 41
+    ERROR_CODE = 1  # repeated ErrorCode; empty when no fault
+    BATTERY_LEVEL = 2  # batteryPercentage, float32
+    ROBOT_TASK_STATUS = 3  # nested task-status message
+    BINDED_UUID = 13  # bound account/device UUID (string)
+    CLEAN_WATER_TANK_STATE = 23  # enum
+    SEWAGE_TANK_STATE = 24  # enum
+    DEVICE_STATUS_CODE_LIST = 25
+    FAN_LEVEL = 26  # active suction (FanLevel enum)
+    MOP_HUMIDITY = 29  # active water level (MopHumidity enum)
+    STATION_BAG_HEALTH_SCORE = 35  # float32, %
+    STATION_BAG_HEALTH_RESET_TIME = 36  # epoch
+    CURING_AGENT_CONSUMPTION_PERCENT = 38
+    HEAVY_DETERGENT_REMAIN_PERCENT = 41
+    CHARGING_STATUS = 47  # canonical charging state (enum)
 
 
-# upgrade_status field numbers
+# upgrade_status field numbers (OTAUpgradeStatus)
 class UpgradeStatusField(IntEnum):
-    """Field numbers in the upgrade_status protobuf message."""
+    """Field numbers in the upgrade_status (OTAUpgradeStatus) message.
 
-    STATUS_CODE = 4
+    Names from the decompiled BuilderInfo: 1 type, 2 status, 3 progress,
+    4 stage, 5 errorCode, 6 detailErrorCode, 7 currentVersion, 8 targetVersion.
+    """
+
+    STATUS = 2
+    PROGRESS = 3
+    STAGE = 4
+    ERROR_CODE = 5
     CURRENT_FIRMWARE = 7
     TARGET_FIRMWARE = 8
 
@@ -227,20 +253,19 @@ class UpgradeStatusField(IntEnum):
 class WorkingStatusField(IntEnum):
     """Field numbers in the working_status protobuf message.
 
-    Confirmed via live test (2026-02-27):
-      3  = current session elapsed seconds (confirmed: 2136→2159 over 35-min clean)
-      13 = cleaning area in cm² (confirmed: 18000 = 1.8m²)
-      15 = 600 during cleaning (possibly cumulative or constant)
-      6  = 1 during cleaning (observed in plan-based clean; may vary by mode)
-      10 = time since docked in seconds (post-dock only, counts up)
-      11 = 2700 post-dock (unknown, constant)
-
-    Also broadcast during cleaning:
-      status/time_line_status — timeline/history data
-      developer/planning_debug_info — navigation debug (collision count, stall count)
+    Names from the decompiled WorkingStatus proto BuilderInfo:
+      1  = workingProgress (float32, PbFieldType 0x100)
+      2  = coveredArea (float32, PbFieldType 0x100) — area cleaned this session, m²
+      3  = timeConsuming (seconds) — session elapsed time
+      4  = remainedTime (seconds)
+      6  = cleaningZoneId
+      8..17 = station drying/sterilization/dust-bag timers (seconds); the
+              cumulative "total*" counters (9/11/13/15/17) stay constant while
+              idle. Field 13 = totalDryStationBagTime (18000 = 5h) — earlier
+              misread as cleaning area because 18000/10000 looked like 1.8 m².
     """
 
-    ELAPSED_TIME = 3  # current session elapsed seconds — CONFIRMED
-    AREA = 13  # cm² — CONFIRMED (18000 = 1.8m²)
-    CUMULATIVE_TIME = 15  # 600 during cleaning (purpose uncertain)
-    TIME_SINCE_DOCKED = 10  # seconds since docked (post-dock only)
+    PROGRESS = 1  # workingProgress (float32, 0..1)
+    AREA = 2  # coveredArea (float32) — m²
+    ELAPSED_TIME = 3  # timeConsuming — session elapsed seconds
+    REMAINING_TIME = 4  # remainedTime — seconds

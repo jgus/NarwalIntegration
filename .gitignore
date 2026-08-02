@@ -14,9 +14,12 @@ build/
 venv/
 ENV/
 
-# IDE
+# IDE / agent tooling
 .vscode/
 .idea/
+.claude/
+.mcp.json
+ha-mcp.cmd
 *.swp
 *.swo
 *~

@@ -43,9 +43,8 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         translation_key="cleaning_area",
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         state_class=SensorStateClass.MEASUREMENT,
-        # working_status field 13 is cm²; divide by 10000 for m².
-        # NEEDS LIVE VALIDATION: only populated during active cleaning.
-        value_fn=lambda state: round(state.cleaning_area / 10000, 2)
+        # working_status field 2 (coveredArea) is already m²; populated only during active cleaning.
+        value_fn=lambda state: round(state.cleaning_area, 2)
         if state.cleaning_area > 0
         else None,
     ),
@@ -59,6 +58,28 @@ SENSOR_DESCRIPTIONS: tuple[NarwalSensorEntityDescription, ...] = (
         # NEEDS LIVE VALIDATION: only populated during active cleaning.
         value_fn=lambda state: state.cleaning_time
         if state.cleaning_time > 0
+        else None,
+    ),
+    NarwalSensorEntityDescription(
+        key="dust_bag_health",
+        translation_key="dust_bag_health",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # base_status field 35 stationBagHealthScore (float32 %); present only with a station.
+        value_fn=lambda state: round(state.dust_bag_health, 1)
+        if "35" in state.raw_base_status
+        else None,
+    ),
+    NarwalSensorEntityDescription(
+        key="detergent_remaining",
+        translation_key="detergent_remaining",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        # base_status field 41 heavyDetergentRemainPercent.
+        value_fn=lambda state: state.detergent_remaining
+        if "41" in state.raw_base_status
         else None,
     ),
     NarwalSensorEntityDescription(
